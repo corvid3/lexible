@@ -1,0 +1,5 @@
+*.o
+lexible
+*.a
+*.out
+*.d
