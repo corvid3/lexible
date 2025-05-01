@@ -15,6 +15,15 @@ OBJS=$(SRCS:.cc=.o)
 CSRCS=
 COBJS=$(CSRCS:.c=.o)
 
+ifdef LINUX
+INSTALL_LOC=/usr/local/include
+endif
+
+ifdef WINDOWS
+INSTALL_LOC=/usr/x86_64-w64-mingw32/usr/include
+endif
+
+
 default: test
 
 clean:
@@ -28,3 +37,6 @@ clean:
 
 test: src/test.o
 	$(CXX) $^ -o bin/test.out
+
+install:
+	cp src/lexible.hh $(INSTALL_LOC)

@@ -91,25 +91,22 @@ struct ident_parser : pctx::MorphemeParser<TokenType::Identifier>
 
 struct any_parser : pctx::Any<num_parser, ident_parser>
 {
-  pctx::empty_t operator()(State&,
-                           std::string_view,
-                           pctx::placeholder_t<0>) const
+  std::string_view operator()(State&,
+                              std::string_view s,
+                              pctx::placeholder_t<0>) const
   {
-    std::cout << "got a number\n";
-    return {};
+    return s;
   };
 
-  pctx::empty_t operator()(State&,
-                           std::string_view,
-                           pctx::placeholder_t<1>) const
+  std::string_view operator()(State&,
+                              std::string_view s,
+                              pctx::placeholder_t<1>) const
   {
-    std::cout << "got an ident\n";
-    return {};
+    return s;
   };
 };
 
-struct repeater
-  : pctx::Repeat<pctx::MorphemeParser<TokenType::Identifier>, false>
+struct repeater : pctx::Repeat<any_parser, false>
 {
   pctx::empty_t operator()(State&, std::span<std::string_view> s) const
   {
@@ -125,7 +122,7 @@ using parser = pctx::Parser<repeater>;
 int
 main()
 {
-  std::string_view input = "2 ag ab ad";
+  std::string_view input = "ag ab 5 ad 2 3";
   auto out = parser(input).parse();
   std::cout << (out.has_value() ? "success" : "failed") << std::endl;
 }

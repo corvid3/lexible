@@ -171,6 +171,8 @@ public:
 
   bool empty() const { return m_idx >= m_toks.size(); }
 
+  size_t size() const { return m_toks.size() - m_idx; }
+
 private:
   std::span<T const> m_toks;
   size_t m_idx = 0;
@@ -182,6 +184,12 @@ struct FunctionTypes
 
 template<typename Ret, typename Class, typename... Params>
 struct FunctionTypes<Ret (Class::*)(Params...) const>
+{
+  using ret_type = Ret;
+};
+
+template<typename Ret, typename Class, typename... Params>
+struct FunctionTypes<Ret (Class::*)(Params...)>
 {
   using ret_type = Ret;
 };
@@ -228,6 +236,12 @@ public:
     Parser(Parser&&) = delete;
     Parser& operator=(const Parser&) = delete;
     Parser& operator=(Parser&&) = delete;
+
+    auto parse(STATE& s) &&
+    {
+      token_queue_t t(std::span{ m_toks });
+      return START().template run<START>(s, t);
+    }
 
     auto parse() &&
     {
@@ -298,10 +312,19 @@ public:
         },
         tup);
 
+      // TODO: make error reporting better by
+      // allowing optional calls to error reporting functions
+      // inside the derived parsing structure
       if (failed == true)
         return std::optional<out>(std::nullopt);
 
-      return (std::optional<out>)static_cast<Self&>(*this)(state, tup);
+      else {
+        auto unwrapped_tup =
+          std::apply([](auto&&... args) { return std::tuple(*args...); }, tup);
+
+        return (std::optional<out>)static_cast<Self&>(*this)(state,
+                                                             unwrapped_tup);
+      }
     }
   };
 
@@ -341,23 +364,24 @@ public:
                     token_queue_t& fin)
     {
       auto first_match = PARSER().template run<PARSER>(state, token_queue);
-      if (first_match) {
+
+      if (first_match.has_value()) {
         out =
           static_cast<Self&>(*this)(state, *first_match, placeholder_t<I>());
         fin = token_queue;
       }
+
       return first_match.has_value();
     }
 
     template<typename Self, typename... PARSER, std::size_t... Is>
     void apply(auto& out,
                STATE& state,
-               token_queue_t& token_queue,
+               token_queue_t& tok_out,
                std::index_sequence<Is...>)
     {
-      token_queue_t fin(token_queue);
-      (apply_impl<Self, PARSER, Is>(out, state, token_queue, fin) || ...);
-      token_queue = fin;
+      token_queue_t token_copy(tok_out);
+      (... || apply_impl<Self, PARSER, Is>(out, state, token_copy, tok_out));
     }
 
     template<typename Self>
@@ -382,6 +406,14 @@ public:
     }
   };
 
+  template<typename T>
+  struct DenatureOptional;
+  template<typename INNER>
+  struct DenatureOptional<std::optional<INNER>>
+  {
+    using type = INNER;
+  };
+
   // INNER must be the type of another parsing structure
   // AT_LEAST_ONE tells Repeat if it should fail parsing
   //   if it fails to parse a single INNER structure
@@ -397,8 +429,8 @@ public:
       using return_type =
         typename FunctionTypes<decltype(&Self::operator())>::ret_type;
 
-      using child_return_type =
-        typename FunctionTypes<decltype(&INNER::operator())>::ret_type;
+      using child_return_type = typename FunctionTypes<
+        decltype(&INNER::template run<INNER>)>::ret_type::value_type;
 
       // take all of the values of the repeat,
       // put them into a vector,
@@ -406,7 +438,8 @@ public:
       std::vector<child_return_type> pipe;
 
       for (int i = 0; true; i++) {
-        auto const into = INNER().template run<INNER>(state, toks);
+        token_queue_t copy = toks;
+        auto const into = INNER().template run<INNER>(state, copy);
 
         if (not into) {
           // return nullopt if at least one is true,
@@ -419,6 +452,7 @@ public:
           break;
         }
 
+        toks = copy;
         pipe.push_back(*into);
       }
 
