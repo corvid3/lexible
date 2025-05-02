@@ -420,17 +420,19 @@ public:
   // the operator() of the derived structure should take as its
   // second argument a std::span of the return values
   // of Inner
+  // by default, a Repeat converts all of the successfully parsed
+  // values into a std::vector
   template<typename INNER, bool AT_LEAST_ONE>
   struct Repeat
   {
+    using child_return_type = typename FunctionTypes<
+      decltype(&INNER::template run<INNER>)>::ret_type::value_type;
+
     template<typename Self>
     auto run(STATE& state, token_queue_t& toks)
     {
       using return_type =
         typename FunctionTypes<decltype(&Self::operator())>::ret_type;
-
-      using child_return_type = typename FunctionTypes<
-        decltype(&INNER::template run<INNER>)>::ret_type::value_type;
 
       // take all of the values of the repeat,
       // put them into a vector,
@@ -458,6 +460,11 @@ public:
 
       return std::optional<return_type>(static_cast<Self&>(*this)(
         state, std::span{ pipe.begin(), pipe.end() }));
+    }
+
+    auto operator()(STATE&, std::span<child_return_type> in) const
+    {
+      return std::vector(in.begin(), in.end());
     }
   };
 };

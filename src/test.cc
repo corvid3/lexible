@@ -117,7 +117,7 @@ struct repeater : pctx::Repeat<any_parser, false>
   };
 };
 
-using parser = pctx::Parser<repeater>;
+using parser = pctx::Parser<pctx::Repeat<any_parser, false>>;
 
 int
 main()
