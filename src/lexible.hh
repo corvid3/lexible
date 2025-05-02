@@ -115,11 +115,8 @@ private:
   {
     auto const get_regex = []<typename T>() -> std::regex {
       return [](std::string const& x) {
-        return std::regex(x.begin(),
-                          x.end(),
-                          std::regex_constants::ECMAScript |
-                            std::regex_constants::multiline);
-      }((std::stringstream() << '^' << T::regex_contents).str());
+        return std::regex(x.begin(), x.end(), std::regex_constants::ECMAScript);
+      }((std::stringstream() << "^(" << T::regex_contents << ")").str());
     };
 
     using sort_type = std::tuple<std::regex, Enum, int>;
