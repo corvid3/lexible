@@ -201,6 +201,11 @@ struct FunctionTypes<Ret (*)(Params...)>
 template<typename T>
 concept Parser = requires { true; };
 
+// use this for when a parser shouldn't return anything,
+// other than the fact that it successfully parsed or not
+struct empty_t
+{};
+
 template<typename LEXER, typename STATE>
   requires is_lexer<LEXER>
 class ParsingContext
@@ -209,11 +214,6 @@ class ParsingContext
   using token_queue_t = NonowningQueue<token_t>;
 
 public:
-  // use this for when a parser shouldn't return anything,
-  // other than the fact that it successfully parsed or not
-  struct empty_t
-  {};
-
   template<int>
   struct placeholder_t
   {
@@ -320,7 +320,7 @@ public:
       // allowing optional calls to error reporting functions
       // inside the derived parsing structure
       if (failed == true)
-        return std::optional<out>(std::nullopt);
+        return std::optional<out>{};
 
       else {
         auto unwrapped_tup =
@@ -367,10 +367,11 @@ public:
     void assert(auto&, std::index_sequence<Is...>)
     {
       static_assert(
-        (std::same_as<std::remove_reference_t<decltype(std::get<2>(
-                        std::declval<out_type_of_out_type_at<Self, 0>>()))>,
-                      std::remove_reference_t<decltype(std::get<2>(
-                        std::declval<out_type_of_out_type_at<Self, Is>>()))>> &&
+        (std::same_as<
+           std::remove_reference_t<
+             std::tuple_element_t<0, out_type_of_out_type_at<Self, 0>>>,
+           std::remove_reference_t<
+             std::tuple_element_t<0, out_type_of_out_type_at<Self, Is>>>> &&
          ...));
     }
 
@@ -383,8 +384,8 @@ public:
       auto first_match = PARSER().template run<PARSER>(state, token_queue);
 
       if (first_match.has_value()) {
-        out =
-          static_cast<Self&>(*this)(state, *first_match, placeholder_t<I>());
+        out.emplace(
+          static_cast<Self&>(*this)(state, *first_match, placeholder_t<I>()));
         fin = token_queue;
       }
 
@@ -406,22 +407,24 @@ public:
     {
       using index_seq = std::index_sequence_for<MAYBE...>;
 
-      // verify that all return values of the
+      // verify that all return values of the operators()
+      // are the same
       assert<Self>(state, index_seq{});
 
+      // then, if they are, get the return type of the operator()
       using out_type_of_out_type_at =
         typename FunctionTypes<decltype(out_type_at<Self, 0>{}(
           &Self::operator()))>::ret_type;
 
-      using out_type = std::remove_reference_t<decltype(std::get<0>(
-        std::declval<out_type_of_out_type_at>()))>;
+      using out_type = std::remove_reference_t<
+        std::tuple_element_t<0, out_type_of_out_type_at>>;
 
       // need to get result type
       std::optional<out_type> first_match;
 
       // idk? maybe this gets rid of recursion??
       if (toks.empty())
-        return (decltype(first_match))std::nullopt;
+        return std::optional<out_type>();
 
       apply<Self, MAYBE...>(first_match, state, toks, index_seq{});
 
