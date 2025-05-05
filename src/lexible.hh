@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <concepts>
 #include <format>
+#include <functional>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -177,7 +178,9 @@ private:
 
 template<typename Ret, typename... Params>
 struct FunctionTypes
-{};
+{
+  using ret_type = Ret;
+};
 
 template<typename Ret, typename Class, typename... Params>
 struct FunctionTypes<Ret (Class::*)(Params...) const>
@@ -190,6 +193,10 @@ struct FunctionTypes<Ret (Class::*)(Params...)>
 {
   using ret_type = Ret;
 };
+
+template<typename Ret, typename... Params>
+struct FunctionTypes<Ret (*)(Params...)>
+{};
 
 template<typename T>
 concept Parser = requires { true; };
@@ -339,19 +346,32 @@ public:
   {
     using first_type = std::tuple_element_t<0, std::tuple<MAYBE...>>;
 
-    template<typename Self, int i>
-    auto out_type_at(auto& state)
+    template<typename S, std::size_t I>
+    struct out_type_at
     {
-      return decltype(std::declval<Self>().operator()(
-        state, {}, placeholder_t<i>()))();
-    }
+      template<typename R, typename O>
+      std::tuple<R, STATE&, O, placeholder_t<I>> operator()(
+        R (S::* const)(STATE&, O, placeholder_t<I>)) const;
+
+      template<typename R, typename O>
+      std::tuple<R, STATE&, O, placeholder_t<I>> operator()(
+        R (S::*)(STATE&, O, placeholder_t<I>));
+    };
+
+    template<typename Self, std::size_t I>
+    using out_type_of_out_type_at =
+      typename FunctionTypes<decltype(out_type_at<Self, I>{}(
+        &Self::operator()))>::ret_type;
 
     template<typename Self, std::size_t... Is>
-    void assert(auto& state, std::index_sequence<Is...>)
+    void assert(auto&, std::index_sequence<Is...>)
     {
-      static_assert((std::same_as<decltype(out_type_at<Self, Is>(state)),
-                                  decltype(out_type_at<Self, 0>(state))> &&
-                     ...));
+      static_assert(
+        (std::same_as<std::remove_reference_t<decltype(std::get<2>(
+                        std::declval<out_type_of_out_type_at<Self, 0>>()))>,
+                      std::remove_reference_t<decltype(std::get<2>(
+                        std::declval<out_type_of_out_type_at<Self, Is>>()))>> &&
+         ...));
     }
 
     template<typename Self, typename PARSER, int I>
@@ -388,7 +408,13 @@ public:
 
       // verify that all return values of the
       assert<Self>(state, index_seq{});
-      using out_type = decltype(out_type_at<Self, 0>(state));
+
+      using out_type_of_out_type_at =
+        typename FunctionTypes<decltype(out_type_at<Self, 0>{}(
+          &Self::operator()))>::ret_type;
+
+      using out_type = std::remove_reference_t<decltype(std::get<0>(
+        std::declval<out_type_of_out_type_at>()))>;
 
       // need to get result type
       std::optional<out_type> first_match;

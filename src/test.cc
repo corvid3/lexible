@@ -93,14 +93,14 @@ struct any_parser : pctx::Any<num_parser, ident_parser>
 {
   std::string_view operator()(State&,
                               std::string_view s,
-                              pctx::placeholder_t<0>) const
+                              pctx::placeholder_t<0>)
   {
     return s;
   };
 
   std::string_view operator()(State&,
                               std::string_view s,
-                              pctx::placeholder_t<1>) const
+                              pctx::placeholder_t<1>)
   {
     return s;
   };
@@ -108,7 +108,7 @@ struct any_parser : pctx::Any<num_parser, ident_parser>
 
 struct repeater : pctx::Repeat<any_parser, false>
 {
-  pctx::empty_t operator()(State&, std::span<std::string_view> s) const
+  pctx::empty_t operator()(State&, std::span<std::string_view> s)
   {
     for (auto const& i : s)
       std::cout << std::format("list ident: {}\n", i);
