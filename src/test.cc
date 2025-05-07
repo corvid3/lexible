@@ -144,23 +144,17 @@ struct y_inner_parser : pctx::Any<pctx::MorphemeParser<TokenType::Asterisk>>
   }
 };
 
-struct y_andthen
-  : pctx::AndThen<pctx::MorphemeParser<TokenType::Plus>, pctx::MorphemeParser<>>
-{
-  auto operator()(State&, auto) { return lexible::empty_t{}; }
-};
-
 struct y_parser : pctx::Repeat<y_inner_parser, true>
 {
   empty_t operator()(State&, std::span<y const>) { return {}; };
 };
 
-using parser = pctx::Parser<y_parser>;
+using parser = pctx::Engine<y_parser>;
 
 int
 main()
 {
-  std::string_view input = "* ag";
+  std::string_view input = "* ";
   auto out = parser(input).parse();
   std::cout << (out.has_value() ? "success" : "failed") << std::endl;
 }

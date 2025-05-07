@@ -5,11 +5,14 @@
 #include <format>
 #include <functional>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <regex>
+#include <set>
 #include <span>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
@@ -253,6 +256,34 @@ class ParsingContext
   using token_t = typename LEXER::token;
   using token_queue_t = NonowningQueue<token_t>;
 
+  static inline thread_local size_t parsing_depth;
+
+  struct err_buckets
+  {
+    std::map<std::size_t, std::vector<std::string>> m_buckets;
+
+    void push_error(std::size_t depth, std::string_view what)
+    {
+      if (not m_buckets.contains(depth))
+        m_buckets.insert_or_assign(depth, std::vector<std::string>{});
+
+      m_buckets[depth].push_back(std::string(what));
+    }
+
+    auto const& get_deepest_bucket() const
+    {
+      if (m_buckets.size() == 0)
+        throw std::runtime_error(
+          "attempting to get an error bucket when there are no buckets!");
+      return (--m_buckets.end())->second;
+    }
+  };
+
+  // parsing_depth, bucket of errors
+  // report all errors at said depth
+  // maybe just the last.
+  static inline thread_local err_buckets parsing_errors;
+
 public:
   template<int>
   struct placeholder_t
@@ -261,10 +292,10 @@ public:
   };
 
   template<typename START>
-  class Parser
+  class Engine
   {
   public:
-    Parser(std::string_view const str)
+    Engine(std::string_view const str)
     {
       LEXER lex(str);
 
@@ -276,22 +307,29 @@ public:
       }
     }
 
-    Parser(const Parser&) = delete;
-    Parser(Parser&&) = delete;
-    Parser& operator=(const Parser&) = delete;
-    Parser& operator=(Parser&&) = delete;
+    Engine(const Engine&) = delete;
+    Engine(Engine&&) = delete;
+    Engine& operator=(const Engine&) = delete;
+    Engine& operator=(Engine&&) = delete;
 
     auto parse(STATE& s) &&
     {
       token_queue_t t(std::span{ m_toks });
-      return START().template run<START>(s, t);
-    }
+      auto&& out = START().template run<START>(s, t);
 
-    auto parse() &&
-    {
-      STATE s;
-      token_queue_t t(std::span{ m_toks });
-      return START().template run<START>(s, t);
+      if (not t.empty()) {
+        auto const& errs = parsing_errors.get_deepest_bucket();
+
+        if (errs.size() == 0)
+          throw std::runtime_error(
+            "especially weird error, parsing error bucket was created but no "
+            "errors were ever pushed?");
+
+        // TODO: make parsing type
+        throw std::runtime_error(errs.back());
+      }
+
+      return out;
 
       // NOTE: from reading how another person implemented
       // a backtracking parser, it seems that one
@@ -304,12 +342,22 @@ public:
       // a list of syntax errors.
       // when the EOF fails to parse, return the syntax error
       // that corresponds with the highest index of stackframe
+    }
 
-      // TODO: make tokens store line & line offset
+    auto parse() &&
+    {
+      STATE s;
+      return std::move(*this).parse(s);
     }
 
   private:
     std::vector<token_t> m_toks;
+  };
+
+  struct Parser
+  {
+    constexpr Parser() { ParsingContext::parsing_depth += 1; }
+    constexpr ~Parser() { ParsingContext::parsing_depth -= 1; }
   };
 
   // ON_TRUE should be a lambda that takes:
@@ -318,7 +366,7 @@ public:
   // and returns any value,
   //   if no value is desired then use empty_t
   template<auto const EXPECTED_TYPE>
-  struct MorphemeParser
+  struct MorphemeParser : private Parser
   {
     template<typename Self>
     auto run(STATE& state, token_queue_t& toks) -> std::optional<
@@ -330,8 +378,10 @@ public:
         return std::nullopt;
 
       is_token auto const tok = *tok_opt;
-      if (tok.type != EXPECTED_TYPE)
+      if (tok.type != EXPECTED_TYPE) {
+        parsing_errors.push_error(parsing_depth, "failed to parse in morpheme");
         return std::nullopt;
+      }
 
       return static_cast<Self&>(*this)(state, tok.what);
     }
@@ -347,7 +397,7 @@ public:
   // and returns any value,
   //   if no value is desired then use empty_t
   template<typename... EXPECTED>
-  struct AndThen
+  struct AndThen : private Parser
   {
     template<typename Self>
     auto run(STATE& state, token_queue_t& toks)
@@ -373,10 +423,11 @@ public:
       // TODO: make error reporting better by
       // allowing optional calls to error reporting functions
       // inside the derived parsing structure
-      if (failed == true)
-        return std::optional<out>{};
+      if (failed == true) {
+        parsing_errors.push_error(parsing_depth, "failed to parse in andthen");
 
-      else {
+        return std::optional<out>{};
+      } else {
         auto unwrapped_tup =
           std::apply([](auto&&... args) { return std::tuple(*args...); }, tup);
 
@@ -400,7 +451,7 @@ public:
   // the type T in these operators() must be the return type of the
   // parsing type it is associated with
   template<typename... MAYBE>
-  struct Any
+  struct Any : private Parser
   {
     using first_type = std::tuple_element_t<0, std::tuple<MAYBE...>>;
 
@@ -475,7 +526,6 @@ public:
     auto run(STATE& state, token_queue_t& toks)
     {
       using index_seq = std::index_sequence_for<MAYBE...>;
-      token_queue_t tok_copy(toks);
 
       // verify that all return values of the operators()
       // are the same
@@ -500,19 +550,13 @@ public:
 
       // verified that at least by now theres
       // one token in the queue, so it's free to unwrap
-      if (not first_match.has_value())
-        run_err<Self>(state, *tok_copy.next());
+      if (not first_match.has_value()) {
+        parsing_errors.push_error(parsing_depth, "failed to parse in any");
+        return decltype(first_match)();
+      }
 
       return first_match;
     }
-  };
-
-  template<typename T>
-  struct DenatureOptional;
-  template<typename INNER>
-  struct DenatureOptional<std::optional<INNER>>
-  {
-    using type = INNER;
   };
 
   // INNER must be the type of another parsing structure
@@ -524,7 +568,7 @@ public:
   // by default, a Repeat converts all of the successfully parsed
   // values into a std::vector
   template<typename INNER, bool AT_LEAST_ONE>
-  struct Repeat
+  struct Repeat : private Parser
   {
     using child_return_type = typename FunctionTypes<
       decltype(&INNER::template run<INNER>)>::ret_type::value_type;
@@ -547,10 +591,15 @@ public:
         if (not into) {
           // return nullopt if at least one is true,
           // and this is the first parse and it failed to match
-          if constexpr (AT_LEAST_ONE)
-            if (i == 0)
-              return std::optional<return_type>(std::nullopt);
+          if constexpr (AT_LEAST_ONE) {
+            if (i == 0) {
+              // err'd, push one to the queue
+              parsing_errors.push_error(parsing_depth,
+                                        "failed to parse in repeat");
 
+              return std::optional<return_type>(std::nullopt);
+            }
+          }
           // otherwise, return what we got.
           break;
         }
