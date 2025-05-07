@@ -3,6 +3,7 @@
 #include <functional>
 #include <iostream>
 #include <optional>
+#include <stdexcept>
 #include <string_view>
 #include <utility>
 
@@ -104,6 +105,11 @@ struct any_parser : pctx::Any<num_parser, ident_parser>
   {
     return s;
   };
+
+  void err(State&, std::optional<lexer::token>)
+  {
+    throw std::runtime_error("huh");
+  }
 };
 
 struct repeater : pctx::Repeat<any_parser, false>
@@ -125,12 +131,26 @@ public:
   y(int) {};
 };
 
-struct y_inner_parser : pctx::MorphemeParser<TokenType::Asterisk>
+struct y_inner_parser : pctx::Any<pctx::MorphemeParser<TokenType::Asterisk>>
 {
-  y operator()(State&, std::string_view) { return y(1); };
+  y operator()(State&, std::string_view, pctx::placeholder_t<0>)
+  {
+    return y(1);
+  };
+
+  void err(State&, lexer::token const& t)
+  {
+    throw std::runtime_error(std::format("{}", t.what));
+  }
 };
 
-struct y_parser : pctx::Repeat<y_inner_parser, false>
+struct y_andthen
+  : pctx::AndThen<pctx::MorphemeParser<TokenType::Plus>, pctx::MorphemeParser<>>
+{
+  auto operator()(State&, auto) { return lexible::empty_t{}; }
+};
+
+struct y_parser : pctx::Repeat<y_inner_parser, true>
 {
   empty_t operator()(State&, std::span<y const>) { return {}; };
 };
@@ -140,7 +160,7 @@ using parser = pctx::Parser<y_parser>;
 int
 main()
 {
-  std::string_view input = "ag ab 5 ad 2 3";
+  std::string_view input = "* ag";
   auto out = parser(input).parse();
   std::cout << (out.has_value() ? "success" : "failed") << std::endl;
 }

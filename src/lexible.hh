@@ -24,6 +24,9 @@ template<typename T>
 concept is_token = requires(T t) {
   requires is_enum<decltype(t.type)>;
   { t.what } -> std::convertible_to<std::string_view>;
+
+  { t.col } -> std::same_as<std::size_t>;
+  { t.row } -> std::same_as<std::size_t>;
 };
 
 template<typename T>
@@ -32,7 +35,10 @@ concept is_lexer = requires(T t) {
   { t.next() } -> std::same_as<std::optional<typename T::token>>;
 };
 
-template<auto const& REGEX, auto TAG, size_t AFFINITY>
+template<auto const& REGEX,
+         auto TAG,
+         size_t AFFINITY,
+         bool CASE_INSENSITIVE = false>
   requires std::convertible_to<std::string_view,
                                std::remove_reference_t<decltype(REGEX)>>
 class morpheme
@@ -46,6 +52,7 @@ public:
   // higher affinity means that the tag
   // will apply higher than an other tag
   static constexpr int binding_affinity = AFFINITY;
+  static constexpr bool case_insensitive = CASE_INSENSITIVE;
 };
 
 template<typename Enum, typename SKIP_MORPHEME, typename... MORPHEMES>
@@ -57,6 +64,7 @@ public:
   {
     Enum type;
     std::string_view what;
+    std::size_t col, row;
   };
 
   lexer(std::string_view src)
@@ -93,9 +101,24 @@ public:
     if (ce == SKIP_MORPHEME::tag)
       goto restart;
 
+    std::string_view out_sv((char const*)&*out.begin(),
+                            (char const*)&*out.end());
+
     token t;
     t.type = ce;
     t.what = substr.substr(0, out.length());
+    t.col = m_colCtr;
+    t.row = m_rowCtr;
+
+    if (out_sv.contains('\n')) {
+      auto const last_of = out_sv.find_last_of('\n');
+
+      m_rowCtr += std::count(out_sv.begin(), out_sv.end(), '\n');
+      m_colCtr = out_sv.size() - last_of;
+    } else {
+      m_colCtr += out.size();
+    }
+
     return t;
   }
 
@@ -107,6 +130,9 @@ public:
   std::string_view m_src;
   size_t m_off = 0;
 
+  size_t m_rowCtr = 0;
+  size_t m_colCtr = 0;
+
 private:
   // initializes regexes from
   using regex_pair = std::pair<std::regex, Enum>;
@@ -116,7 +142,12 @@ private:
   {
     auto const get_regex = []<typename T>() -> std::regex {
       return [](std::string const& x) {
-        return std::regex(x.begin(), x.end(), std::regex_constants::ECMAScript);
+        return std::regex(
+          x.begin(),
+          x.end(),
+          (T::case_insensitive
+             ? std::regex_constants::ECMAScript | std::regex_constants::icase
+             : std::regex_constants::ECMAScript));
       }((std::stringstream() << "^(" << T::regex_contents << ")").str());
     };
 
@@ -206,6 +237,9 @@ concept Parser = requires { true; };
 struct empty_t
 {};
 
+template<typename Self, typename STATE>
+concept has_err_fn = requires(Self s) { s.err(std::declval<STATE&>(), {}); };
+
 template<typename LEXER, typename STATE>
   requires is_lexer<LEXER>
 class ParsingContext
@@ -252,6 +286,20 @@ public:
       STATE s;
       token_queue_t t(std::span{ m_toks });
       return START().template run<START>(s, t);
+
+      // NOTE: from reading how another person implemented
+      // a backtracking parser, it seems that one
+      // should expect the end of the file (i.e. no tokens)
+      // after a parse.
+      // if there is still tokens,
+      // that means the file failed to parse
+      // and one should return the _DEEPEST_ syntax error.
+      // i.e., keep a ThreadLocal index of the stackframes &
+      // a list of syntax errors.
+      // when the EOF fails to parse, return the syntax error
+      // that corresponds with the highest index of stackframe
+
+      // TODO: make tokens store line & line offset
     }
 
   private:
@@ -332,6 +380,10 @@ public:
     }
   };
 
+  // NOTE: maybe make it so that attaching ::err()
+  // to a parser makes it a non-failable parse?
+  // that is, if it is used within
+
   // MAYBE... should be a list of parsing types
   // that are allowed to be parsed in this expression.
   // the derived parsing type of Any must have a series of
@@ -402,10 +454,22 @@ public:
       (... || apply_impl<Self, PARSER, Is>(out, state, token_copy, tok_out));
     }
 
+    template<has_err_fn<STATE> Self>
+    void run_err(STATE& s, token_t tok)
+    {
+      Self().err(s, tok);
+    }
+
+    template<typename>
+    auto run_err(STATE&, std::optional<token_t>)
+    {
+    }
+
     template<typename Self>
     auto run(STATE& state, token_queue_t& toks)
     {
       using index_seq = std::index_sequence_for<MAYBE...>;
+      token_queue_t tok_copy(toks);
 
       // verify that all return values of the operators()
       // are the same
@@ -427,6 +491,11 @@ public:
         return std::optional<out_type>();
 
       apply<Self, MAYBE...>(first_match, state, toks, index_seq{});
+
+      // verified that at least by now theres
+      // one token in the queue, so it's free to unwrap
+      if (not first_match.has_value())
+        run_err<Self>(state, *tok_copy.next());
 
       return first_match;
     }
