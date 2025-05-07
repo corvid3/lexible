@@ -98,18 +98,15 @@ public:
 
     m_off += out.length();
 
-    if (ce == SKIP_MORPHEME::tag)
-      goto restart;
-
     std::string_view out_sv((char const*)&*out.begin(),
                             (char const*)&*out.end());
 
-    token t;
-    t.type = ce;
-    t.what = substr.substr(0, out.length());
-    t.col = m_colCtr;
-    t.row = m_rowCtr;
+    // save these for the _start_ position of the token
+    auto const saved_row = m_rowCtr;
+    auto const saved_col = m_colCtr;
 
+    // have to put this here so the skip token
+    // also counts towards advancing the row & col
     if (out_sv.contains('\n')) {
       auto const last_of = out_sv.find_last_of('\n');
 
@@ -118,6 +115,15 @@ public:
     } else {
       m_colCtr += out.size();
     }
+
+    if (ce == SKIP_MORPHEME::tag)
+      goto restart;
+
+    token t;
+    t.type = ce;
+    t.what = substr.substr(0, out.length());
+    t.col = saved_col;
+    t.row = saved_row;
 
     return t;
   }
