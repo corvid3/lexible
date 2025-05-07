@@ -25,8 +25,8 @@ concept is_token = requires(T t) {
   requires is_enum<decltype(t.type)>;
   { t.what } -> std::convertible_to<std::string_view>;
 
-  { t.col } -> std::same_as<std::size_t>;
-  { t.row } -> std::same_as<std::size_t>;
+  { t.col } -> std::convertible_to<std::size_t>;
+  { t.row } -> std::convertible_to<std::size_t>;
 };
 
 template<typename T>
