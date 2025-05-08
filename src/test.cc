@@ -138,10 +138,7 @@ struct y_inner_parser : pctx::Any<pctx::MorphemeParser<TokenType::Asterisk>>
     return y(1);
   };
 
-  void err(State&, lexer::token const& t)
-  {
-    throw std::runtime_error(std::format("{}", t.what));
-  }
+  std::string err(State&, lexer::token const&) { return "err"; }
 };
 
 struct y_parser : pctx::Repeat<y_inner_parser, true>
@@ -154,7 +151,7 @@ using parser = pctx::Engine<y_parser>;
 int
 main()
 {
-  std::string_view input = "* ";
+  std::string_view input = "* abba";
   auto out = parser(input).parse();
   std::cout << (out.has_value() ? "success" : "failed") << std::endl;
 }

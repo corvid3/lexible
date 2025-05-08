@@ -247,7 +247,9 @@ struct empty_t
 {};
 
 template<typename Self, typename STATE>
-concept has_err_fn = requires(Self s) { s.err(std::declval<STATE&>(), {}); };
+concept has_err_fn = requires(Self s) {
+  { s.err(std::declval<STATE&>(), {}) } -> std::same_as<std::string>;
+};
 
 template<typename LEXER, typename STATE>
   requires is_lexer<LEXER>
@@ -441,6 +443,13 @@ public:
   // to a parser makes it a non-failable parse?
   // that is, if it is used within
 
+  // hmm, more brainstorming,
+  // maybe each Parser returns a std::result,
+  // and then user-impls just take or return JUST the Correct Result,
+  // then, it'd be possible to give custom error messages
+  // for each parser, and the ability to "override" sub-errors
+  // which would be useful for Any / AndThen parsers
+
   // MAYBE... should be a list of parsing types
   // that are allowed to be parsed in this expression.
   // the derived parsing type of Any must have a series of
@@ -512,14 +521,15 @@ public:
     }
 
     template<has_err_fn<STATE> Self>
-    void run_err(STATE& s, token_t tok)
+    std::string run_err(STATE& s, token_t tok)
     {
-      Self().err(s, tok);
+      return Self().err(s, tok);
     }
 
     template<typename>
-    auto run_err(STATE&, std::optional<token_t>)
+    std::string run_err(STATE&, token_t)
     {
+      return "failed to parse in any (no custom error report provided)";
     }
 
     template<typename Self>
@@ -551,7 +561,8 @@ public:
       // verified that at least by now theres
       // one token in the queue, so it's free to unwrap
       if (not first_match.has_value()) {
-        parsing_errors.push_error(parsing_depth, "failed to parse in any");
+        parsing_errors.push_error(parsing_depth,
+                                  run_err<Self>(state, *toks.next()));
         return decltype(first_match)();
       }
 
