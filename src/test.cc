@@ -1,4 +1,6 @@
 #include "lexible.hh"
+#include <cstdio>
+#include <expected>
 #include <format>
 #include <functional>
 #include <iostream>
@@ -9,6 +11,9 @@
 
 enum class TokenType
 {
+  // required EOF token type
+  LEXIBLE_EOF,
+
   LeftParanthesis,
   RightParanthesis,
 
@@ -138,7 +143,7 @@ struct y_inner_parser : pctx::Any<pctx::MorphemeParser<TokenType::Asterisk>>
     return y(1);
   };
 
-  std::string err(State&, lexer::token const&) { return "err"; }
+  std::string err(State&) { return "m"; }
 };
 
 struct y_parser : pctx::Repeat<y_inner_parser, true>
@@ -146,12 +151,18 @@ struct y_parser : pctx::Repeat<y_inner_parser, true>
   empty_t operator()(State&, std::span<y const>) { return {}; };
 };
 
-using parser = pctx::Engine<y_parser>;
+using parser = pctx::Engine<pctx::ExpectEOF<y_parser>>;
 
 int
 main()
 {
-  std::string_view input = "* abba";
+  std::string_view input = "error *";
   auto out = parser(input).parse();
-  std::cout << (out.has_value() ? "success" : "failed") << std::endl;
+
+  if (out.has_value()) {
+    std::cout << std::format("got a successful parse\n");
+  } else {
+    std::cout << std::format("got an unsuccessful parse: {}\n",
+                             out.error().what());
+  }
 }

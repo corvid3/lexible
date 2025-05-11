@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <concepts>
+#include <expected>
 #include <format>
 #include <functional>
 #include <iostream>
@@ -26,8 +27,11 @@ concept is_enum = requires { requires std::is_scoped_enum_v<T>; };
 template<typename T>
 concept is_token = requires(T t) {
   requires is_enum<decltype(t.type)>;
-  { t.what } -> std::convertible_to<std::string_view>;
 
+  // required EOF token type
+  { decltype(t.type)::LEXIBLE_EOF } -> std::same_as<decltype(t.type)>;
+
+  { t.what } -> std::convertible_to<std::string_view>;
   { t.col } -> std::convertible_to<std::size_t>;
   { t.row } -> std::convertible_to<std::size_t>;
 };
@@ -35,7 +39,7 @@ concept is_token = requires(T t) {
 template<typename T>
 concept is_lexer = requires(T t) {
   requires is_token<typename T::token>;
-  { t.next() } -> std::same_as<std::optional<typename T::token>>;
+  { t.next() } -> std::same_as<typename T::token>;
 };
 
 template<auto const& REGEX,
@@ -77,11 +81,18 @@ public:
     std::call_once(init, sort_regex_orders);
   };
 
-  std::optional<token> next()
+  // will always return a token, as EOF is a valid token
+  token next()
   {
   restart:
-    if (m_off == m_src.size())
-      return std::nullopt;
+    if (m_off == m_src.size()) {
+      token t;
+      t.type = Enum::LEXIBLE_EOF;
+      t.what = { m_src.end(), m_src.end() };
+      t.col = m_colCtr;
+      t.row = m_rowCtr;
+      return t;
+    }
 
     std::cmatch out;
     auto substr = get_substr();
@@ -200,14 +211,19 @@ public:
   {
   }
 
-  std::optional<T> next()
+  // will always return EOF if at end of stream
+  T next()
   {
-    if (m_idx >= m_toks.size())
-      return std::nullopt;
-    return m_toks[m_idx++];
+    auto&& out = m_toks[m_idx];
+
+    if (m_idx < m_toks.size() - 1)
+      m_idx++;
+
+    return out;
   }
 
-  bool empty() const { return m_idx >= m_toks.size(); }
+  // if we're at EOF, that means the stream is empty
+  bool empty() const { return m_idx == m_toks.size() - 1; }
 
   size_t size() const { return m_toks.size() - m_idx; }
 
@@ -258,35 +274,83 @@ class ParsingContext
   using token_t = typename LEXER::token;
   using token_queue_t = NonowningQueue<token_t>;
 
-  static inline thread_local size_t parsing_depth;
+  static inline thread_local int parsing_depth = 0;
 
-  struct err_buckets
+public:
+  class Error
   {
-    std::map<std::size_t, std::vector<std::string>> m_buckets;
+    int m_depth;
+    std::string m_error;
+    token_t m_errTok;
 
-    void push_error(std::size_t depth, std::string_view what)
+    std::unique_ptr<Error> m_child = nullptr;
+
+  public:
+    struct empty_m
+    {};
+
+    Error(const Error&) = delete;
+    Error(Error&&) = default;
+    Error& operator=(const Error&) = delete;
+    Error& operator=(Error&&) = default;
+    // creates an empty, uninitialized error
+    Error(empty_m) {};
+
+    Error(token_t const& tok, std::string_view what)
+      : m_depth(parsing_depth)
+      , m_error(what)
+      , m_errTok(tok) {};
+
+    // formats the error into a human readable string
+    std::string what() const
     {
-      if (not m_buckets.contains(depth))
-        m_buckets.insert_or_assign(depth, std::vector<std::string>{});
+      // increment row & col by 1, because they're zero indexed
+      auto const this_str =
+        std::format("{}:{} | {}\n", row() + 1, col() + 1, error());
 
-      m_buckets[depth].push_back(std::string(what));
+      auto const child_str = m_child ? m_child->what() : std::string();
+
+      return this_str + child_str;
     }
 
-    auto const& get_deepest_bucket() const
+    auto const& error() const { return m_error; }
+    auto row() const { return m_errTok.row; }
+    auto col() const { return m_errTok.col; }
+
+    bool operator<(Error const& rhs) const { return m_depth < rhs.m_depth; }
+
+    Error& operator|(Error& rhs)
     {
-      if (m_buckets.size() == 0)
-        throw std::runtime_error(
-          "attempting to get an error bucket when there are no buckets!");
-      return (--m_buckets.end())->second;
+      if (*this < rhs)
+        return rhs;
+
+      return *this;
+    }
+
+    Error const& operator<<(Error&& rhs) &
+    {
+      this->m_child.reset(new Error(std::move(rhs)));
+      return *this;
+    }
+
+    std::optional<std::reference_wrapper<Error>> get_child() const
+    {
+      if (m_child)
+        return (*m_child);
+      else
+        return std::nullopt;
     }
   };
 
-  // parsing_depth, bucket of errors
-  // report all errors at said depth
-  // maybe just the last.
-  static inline thread_local err_buckets parsing_errors;
+  template<typename T>
+  using Result = std::expected<T, Error>;
 
-public:
+  template<typename Result>
+  static auto create_error(auto&&... v)
+  {
+    return Result(std::unexpected<Error>(Error(std::move(v)...)));
+  }
+
   template<int>
   struct placeholder_t
   {
@@ -303,9 +367,10 @@ public:
 
       for (;;) {
         auto const tok = lex.next();
-        if (not tok)
+        m_toks.push_back(tok);
+
+        if (tok.type == decltype(tok.type)::LEXIBLE_EOF)
           break;
-        m_toks.push_back(*tok);
       }
     }
 
@@ -320,15 +385,15 @@ public:
       auto&& out = START().template run<START>(s, t);
 
       if (not t.empty()) {
-        auto const& errs = parsing_errors.get_deepest_bucket();
-
-        if (errs.size() == 0)
+        if (out.has_value()) {
           throw std::runtime_error(
-            "especially weird error, parsing error bucket was created but no "
-            "errors were ever pushed?");
+            "didn't hit EOF by end of parse in lexible, "
+            "an incomplete grammar was provided. please edit your grammar "
+            "definition to error on non-eof");
+        }
 
-        // TODO: make parsing type
-        throw std::runtime_error(errs.back());
+        // TODO: make parsing err type
+        throw std::runtime_error(out.error().what());
       }
 
       return out;
@@ -344,6 +409,11 @@ public:
       // a list of syntax errors.
       // when the EOF fails to parse, return the syntax error
       // that corresponds with the highest index of stackframe
+
+      // can keep a chain of syntax errors?
+      // i.e., keep a mutating tree of syntax errors,
+      // and then if failed to parse print
+      // the entire chain of syntax errors
     }
 
     auto parse() &&
@@ -371,21 +441,18 @@ public:
   struct MorphemeParser : private Parser
   {
     template<typename Self>
-    auto run(STATE& state, token_queue_t& toks) -> std::optional<
-      typename FunctionTypes<decltype(&Self::operator())>::ret_type>
+    auto run(STATE& state, token_queue_t& toks)
     {
-      auto const tok_opt = toks.next();
+      using result_type =
+        Result<typename FunctionTypes<decltype(&Self::operator())>::ret_type>;
 
-      if (not tok_opt)
-        return std::nullopt;
+      auto const tok = toks.next();
 
-      is_token auto const tok = *tok_opt;
       if (tok.type != EXPECTED_TYPE) {
-        parsing_errors.push_error(parsing_depth, "failed to parse in morpheme");
-        return std::nullopt;
+        return create_error<result_type>(tok, "failed to parse in morpheme");
       }
 
-      return static_cast<Self&>(*this)(state, tok.what);
+      return result_type(static_cast<Self&>(*this)(state, tok.what));
     }
 
     std::string_view operator()(STATE&, std::string_view s) const { return s; }
@@ -404,37 +471,45 @@ public:
     template<typename Self>
     auto run(STATE& state, token_queue_t& toks)
     {
+      // if any of EXPECTED... fail,
+      // then this should return an error.
+
+      auto const starting_token = token_queue_t(toks).next();
+
       auto tup =
         std::tuple{ EXPECTED().template run<EXPECTED>(state, toks)... };
       bool failed = false;
 
-      using out = decltype(std::declval<Self>().operator()(state, tup));
+      using result_type =
+        Result<decltype(std::declval<Self>().operator()(state, tup))>;
 
+      Error e(typename Error::empty_m{});
+
+      // TODO: need to short circuit this
       std::apply(
         [&](auto const&... args) {
           (
             [&](auto const& arg) {
-              if (not arg.has_value())
+              if (not arg.has_value()) {
                 failed = true;
+
+                e << std::move(arg.err);
+              }
+
               return;
             }(args),
             ...);
         },
         tup);
 
-      // TODO: make error reporting better by
-      // allowing optional calls to error reporting functions
-      // inside the derived parsing structure
       if (failed == true) {
-        parsing_errors.push_error(parsing_depth, "failed to parse in andthen");
-
-        return std::optional<out>{};
+        // TODO: allow programmer to "override" inner errors
+        return create_error(std::move(e));
       } else {
         auto unwrapped_tup =
           std::apply([](auto&&... args) { return std::tuple(*args...); }, tup);
 
-        return (std::optional<out>)static_cast<Self&>(*this)(state,
-                                                             unwrapped_tup);
+        return result_type(static_cast<Self&>(*this)(state, unwrapped_tup));
       }
     }
   };
@@ -493,43 +568,59 @@ public:
          ...));
     }
 
-    template<typename Self, typename PARSER, int I>
-    bool apply_impl(auto& out,
+    template<typename Self, typename Result, typename PARSER, int I>
+    bool apply_impl(Result& out,
                     STATE& state,
                     token_queue_t token_queue,
                     token_queue_t& fin)
     {
       auto first_match = PARSER().template run<PARSER>(state, token_queue);
 
-      if (first_match.has_value()) {
-        out.emplace(
-          static_cast<Self&>(*this)(state, *first_match, placeholder_t<I>()));
-        fin = token_queue;
-      }
+      if (not first_match.has_value()) {
+        // keep matching for the deepest error
+        out =
+          create_error<Result>(std::move(out.error() | first_match.error()));
 
-      return first_match.has_value();
+        return false;
+      } else {
+        // set it to be a true result,
+        // and then use short-circuiting boolean operators in apply
+        // to skip processing the rest of the parsers
+        out = Result(
+          static_cast<Self&>(*this)(state, *first_match, placeholder_t<I>()));
+
+        fin = token_queue;
+
+        return true;
+      }
     }
 
-    template<typename Self, typename... PARSER, std::size_t... Is>
-    void apply(auto& out,
+    template<typename Self,
+             typename Result,
+             typename... PARSER,
+             std::size_t... Is>
+    void apply(auto& result,
                STATE& state,
                token_queue_t& tok_out,
                std::index_sequence<Is...>)
     {
+      // this method uses the short-circuiting property
+      // of c++ boolean operators,
+      // see apply_impl
       token_queue_t token_copy(tok_out);
-      (... || apply_impl<Self, PARSER, Is>(out, state, token_copy, tok_out));
+      (... || apply_impl<Self, Result, PARSER, Is>(
+                result, state, token_copy, tok_out));
     }
 
-    template<has_err_fn<STATE> Self>
-    std::string run_err(STATE& s, token_t tok)
+    template<has_err_fn<STATE> Self, typename Result>
+    void run_err(STATE& s, token_t tok, auto& result)
     {
-      return Self().err(s, tok);
+      result = create_error<Result>(tok, Self().err(s));
     }
 
-    template<typename>
-    std::string run_err(STATE&, token_t)
+    template<typename, typename Result>
+    void run_err(STATE&, token_t, auto&)
     {
-      return "failed to parse in any (no custom error report provided)";
     }
 
     template<typename Self>
@@ -549,25 +640,33 @@ public:
       using out_type = std::remove_reference_t<
         std::tuple_element_t<0, out_type_of_out_type_at>>;
 
+      using result_type = Result<out_type>;
+
+      auto const first_token = token_queue_t(toks).next();
+
       // need to get result type
-      std::optional<out_type> first_match;
+      // put in some garbage data so we can use this
+      result_type first_match = create_error<result_type>(
+        first_token, "empty debug error in any match");
 
-      // idk? maybe this gets rid of recursion??
-      if (toks.empty())
-        return std::optional<out_type>();
+      // return early for a "successful" parse,
+      // but while there are errors, continue compiling the deepest
+      // error
+      apply<Self, result_type, MAYBE...>(first_match, state, toks, index_seq{});
 
-      apply<Self, MAYBE...>(first_match, state, toks, index_seq{});
+      // if there is a "override_err" method,
+      // and the parser failed, then overrwrite the deepest error
+      if (not first_match.has_value())
+        run_err<Self, result_type>(state, first_token, first_match);
 
-      // verified that at least by now theres
-      // one token in the queue, so it's free to unwrap
-      if (not first_match.has_value()) {
-        parsing_errors.push_error(parsing_depth,
-                                  run_err<Self>(state, *toks.next()));
-        return decltype(first_match)();
-      }
-
+      // TODO: allow user to override any sub-errors
+      // with a custom error method
       return first_match;
     }
+
+    // idk? maybe this gets rid of recursion??
+    // if (toks.empty())
+    //   return result_type(error_type("hit EOF in any parser"));
   };
 
   // INNER must be the type of another parsing structure
@@ -578,6 +677,8 @@ public:
   // of Inner
   // by default, a Repeat converts all of the successfully parsed
   // values into a std::vector
+  // will only ever return an error if AT_LEAST_ONE is
+  // true, and not a single inner term was parsed.
   template<typename INNER, bool AT_LEAST_ONE>
   struct Repeat : private Parser
   {
@@ -587,8 +688,10 @@ public:
     template<typename Self>
     auto run(STATE& state, token_queue_t& toks)
     {
-      using return_type =
-        typename FunctionTypes<decltype(&Self::operator())>::ret_type;
+      using result_type =
+        Result<typename FunctionTypes<decltype(&Self::operator())>::ret_type>;
+
+      auto const starting_token = token_queue_t(toks).next();
 
       // take all of the values of the repeat,
       // put them into a vector,
@@ -597,7 +700,7 @@ public:
 
       for (int i = 0; true; i++) {
         token_queue_t copy = toks;
-        auto const into = INNER().template run<INNER>(state, copy);
+        auto into = INNER().template run<INNER>(state, copy);
 
         if (not into) {
           // return nullopt if at least one is true,
@@ -605,12 +708,17 @@ public:
           if constexpr (AT_LEAST_ONE) {
             if (i == 0) {
               // err'd, push one to the queue
-              parsing_errors.push_error(parsing_depth,
-                                        "failed to parse in repeat");
+              Error e(
+                starting_token,
+                "failed to parse in repeat, expected at least one possible "
+                "parse");
 
-              return std::optional<return_type>(std::nullopt);
+              e << std::move(into.error());
+
+              return create_error<result_type>(std::move(e));
             }
           }
+
           // otherwise, return what we got.
           break;
         }
@@ -619,13 +727,37 @@ public:
         pipe.push_back(*into);
       }
 
-      return std::optional<return_type>(static_cast<Self&>(*this)(
+      return result_type(static_cast<Self&>(*this)(
         state, std::span{ pipe.begin(), pipe.end() }));
     }
 
     auto operator()(STATE&, std::span<child_return_type> in) const
     {
       return std::vector(in.begin(), in.end());
+    }
+  };
+
+  template<typename INNER>
+  struct ExpectEOF : private Parser
+  {
+    template<typename Self>
+    auto run(STATE& state, token_queue_t& toks)
+    {
+      auto out = INNER().template run<INNER>(state, toks);
+
+      using result_type = decltype(out);
+
+      if (not toks.empty()) {
+        Error e(toks.next(), "expected EOF");
+        // prefer deepest possible error
+
+        if (not out.has_value())
+          e << std::move(out.error());
+
+        return create_error<result_type>(std::move(e));
+      }
+
+      return std::move(out);
     }
   };
 };
