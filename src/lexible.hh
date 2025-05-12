@@ -122,6 +122,7 @@ public:
     // have to put this here so the skip token
     // also counts towards advancing the row & col
     if (out_sv.contains('\n')) {
+      printf("newline\n");
       auto const last_of = out_sv.find_last_of('\n');
 
       m_rowCtr += std::count(out_sv.begin(), out_sv.end(), '\n');
@@ -264,7 +265,7 @@ struct empty_t
 
 template<typename Self, typename STATE>
 concept has_err_fn = requires(Self s) {
-  { s.err(std::declval<STATE&>(), {}) } -> std::same_as<std::string>;
+  { s.err(std::declval<STATE&>()) } -> std::convertible_to<std::string>;
 };
 
 template<typename LEXER, typename STATE>
@@ -327,9 +328,9 @@ public:
       return *this;
     }
 
-    Error const& operator<<(Error&& rhs) &
+    Error const& operator<<(Error&&) &
     {
-      this->m_child.reset(new Error(std::move(rhs)));
+      // this->m_child.reset(new Error(std::move(rhs)));
       return *this;
     }
 
@@ -381,20 +382,23 @@ public:
 
     auto parse(STATE& s) &&
     {
+      using return_type =
+        typename FunctionTypes<decltype(&START::template run<START>)>::ret_type;
+
       token_queue_t t(std::span{ m_toks });
-      auto&& out = START().template run<START>(s, t);
+      return_type&& out = START().template run<START>(s, t);
 
-      if (not t.empty()) {
-        if (out.has_value()) {
-          throw std::runtime_error(
-            "didn't hit EOF by end of parse in lexible, "
-            "an incomplete grammar was provided. please edit your grammar "
-            "definition to error on non-eof");
-        }
+      // if (not t.empty()) {
+      //   if (out.has_value()) {
+      //     throw std::runtime_error(
+      //       "didn't hit EOF by end of parse in lexible, "
+      //       "an incomplete grammar was provided. please edit your grammar "
+      //       "definition to error on non-eof");
+      //   }
 
-        // TODO: make parsing err type
-        throw std::runtime_error(out.error().what());
-      }
+      //   // TODO: make parsing err type
+      //   throw std::runtime_error(out.error().what());
+      // }
 
       return out;
 
@@ -414,6 +418,24 @@ public:
       // i.e., keep a mutating tree of syntax errors,
       // and then if failed to parse print
       // the entire chain of syntax errors
+
+      // FIGURED IT OUT!
+      // keep a chain of errors, but also return values.
+      // an error can happen in a parser, but the
+      // actual error won't flag until potentially
+      // several depths up in the chain.
+      // if it does this, and we're not keeping errors and instead just using an
+      // std::expected struct, we'll lose a lot of the parsing data
+
+      // basically,
+      // * keep a unidirectional nonbranching graph of errors
+      // * never throw away error information, keep a pair
+      // * only bubble up "exception"-like once a parser truly fails
+      //    a parser fail is when it fails to yield a meaningful value
+
+      // NOTE: implement cut for AndThen
+      // basically, forces the parser
+      // to bubble up an error if the parse fails after a certain point
     }
 
     auto parse() &&
@@ -474,26 +496,26 @@ public:
       // if any of EXPECTED... fail,
       // then this should return an error.
 
-      auto const starting_token = token_queue_t(toks).next();
+      // auto const starting_token = token_queue_t(toks).next();
 
       auto tup =
         std::tuple{ EXPECTED().template run<EXPECTED>(state, toks)... };
       bool failed = false;
 
-      using result_type =
-        Result<decltype(std::declval<Self>().operator()(state, tup))>;
+      using result_type = Result<typename FunctionTypes<decltype(Self()(
+        state, std::declval<decltype(tup)>()))>::ret_type>;
 
       Error e(typename Error::empty_m{});
 
       // TODO: need to short circuit this
       std::apply(
-        [&](auto const&... args) {
+        [&](auto&... args) {
           (
-            [&](auto const& arg) {
+            [&](auto& arg) {
               if (not arg.has_value()) {
                 failed = true;
 
-                e << std::move(arg.err);
+                e << std::move(arg.error());
               }
 
               return;
@@ -504,7 +526,7 @@ public:
 
       if (failed == true) {
         // TODO: allow programmer to "override" inner errors
-        return create_error(std::move(e));
+        return create_error<result_type>(e);
       } else {
         auto unwrapped_tup =
           std::apply([](auto&&... args) { return std::tuple(*args...); }, tup);
@@ -545,10 +567,6 @@ public:
       template<typename R, typename O>
       std::tuple<R, STATE&, O, placeholder_t<I>> operator()(
         R (S::* const)(STATE&, O, placeholder_t<I>)) const;
-
-      template<typename R, typename O>
-      std::tuple<R, STATE&, O, placeholder_t<I>> operator()(
-        R (S::*)(STATE&, O, placeholder_t<I>));
     };
 
     template<typename Self, std::size_t I>
@@ -578,8 +596,7 @@ public:
 
       if (not first_match.has_value()) {
         // keep matching for the deepest error
-        out =
-          create_error<Result>(std::move(out.error() | first_match.error()));
+        out = create_error<Result>(out.error() | first_match.error());
 
         return false;
       } else {
@@ -612,20 +629,26 @@ public:
                 result, state, token_copy, tok_out));
     }
 
-    template<has_err_fn<STATE> Self, typename Result>
+    template<typename Self, typename Result>
+      requires has_err_fn<Self, STATE>
     void run_err(STATE& s, token_t tok, auto& result)
     {
       result = create_error<Result>(tok, Self().err(s));
     }
 
-    template<typename, typename Result>
+    template<typename Self, typename Result>
+      requires(not has_err_fn<Self, STATE>)
     void run_err(STATE&, token_t, auto&)
     {
+      printf("wrong err function ran.\n");
     }
 
     template<typename Self>
     auto run(STATE& state, token_queue_t& toks)
     {
+      // TODO: Any should actually choose the parse that consumes the most
+      // tokens!
+      // maybe.
       using index_seq = std::index_sequence_for<MAYBE...>;
 
       // verify that all return values of the operators()
@@ -649,6 +672,11 @@ public:
       result_type first_match = create_error<result_type>(
         first_token, "empty debug error in any match");
 
+      // idk? maybe this gets rid of recursion??
+      if (toks.empty())
+        return result_type(
+          create_error<result_type>(first_token, "hit EOF in any parser"));
+
       // return early for a "successful" parse,
       // but while there are errors, continue compiling the deepest
       // error
@@ -656,17 +684,14 @@ public:
 
       // if there is a "override_err" method,
       // and the parser failed, then overrwrite the deepest error
-      if (not first_match.has_value())
+      if (not first_match.has_value()) {
         run_err<Self, result_type>(state, first_token, first_match);
+      }
 
       // TODO: allow user to override any sub-errors
       // with a custom error method
       return first_match;
     }
-
-    // idk? maybe this gets rid of recursion??
-    // if (toks.empty())
-    //   return result_type(error_type("hit EOF in any parser"));
   };
 
   // INNER must be the type of another parsing structure
@@ -715,7 +740,7 @@ public:
 
               e << std::move(into.error());
 
-              return create_error<result_type>(std::move(e));
+              return create_error<result_type>(e);
             }
           }
 
@@ -751,10 +776,11 @@ public:
         Error e(toks.next(), "expected EOF");
         // prefer deepest possible error
 
-        if (not out.has_value())
+        if (not out.has_value()) {
+          printf("has error\n");
           e << std::move(out.error());
-
-        return create_error<result_type>(std::move(e));
+        }
+        return create_error<result_type>(e);
       }
 
       return std::move(out);

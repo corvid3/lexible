@@ -70,23 +70,19 @@ struct paranthesis_parser
                   expression_parser,
                   pctx::MorphemeParser<TokenType::RightParanthesis>>
 {
-  auto operator()(State&, auto) const -> empty_t { return {}; };
+  empty_t operator()(State&, auto) const { return {}; };
 };
 
 struct expression_parser
   : pctx::Any<pctx::MorphemeParser<TokenType::Number>, paranthesis_parser>
 {
-  auto operator()(State&, std::string_view s, pctx::placeholder_t<0>) const
-    -> empty_t
+  empty_t operator()(State&, std::string_view s, pctx::placeholder_t<0>)
   {
     std::cout << s << std::endl;
     return {};
   };
 
-  auto operator()(State&, empty_t, pctx::placeholder_t<1>) const -> empty_t
-  {
-    return {};
-  };
+  empty_t operator()(State&, empty_t, pctx::placeholder_t<1>) { return {}; };
 };
 
 struct num_parser : pctx::MorphemeParser<TokenType::Number>
@@ -119,7 +115,7 @@ struct any_parser : pctx::Any<num_parser, ident_parser>
 
 struct repeater : pctx::Repeat<any_parser, false>
 {
-  empty_t operator()(State&, std::span<std::string_view> s)
+  empty_t operator()(State&, std::span<std::string_view> s) const
   {
     for (auto const& i : s)
       std::cout << std::format("list ident: {}\n", i);
@@ -151,7 +147,12 @@ struct y_parser : pctx::Repeat<y_inner_parser, true>
   empty_t operator()(State&, std::span<y const>) { return {}; };
 };
 
-using parser = pctx::Engine<pctx::ExpectEOF<y_parser>>;
+struct athen : pctx::AndThen<pctx::MorphemeParser<TokenType::Asterisk>>
+{
+  empty_t operator()(State&, auto) const { return {}; }
+};
+
+using parser = pctx::Engine<pctx::ExpectEOF<athen>>;
 
 int
 main()

@@ -1,6 +1,8 @@
 CXXFLAGS=-MMD @compile_flags.txt -fPIC
 CFLAGS=-MMD @ccompile_flags.txt -fPIC
 
+CXX=g++-14
+
 ifdef RELEASE
 CXXFLAGS+=-O2
 else
