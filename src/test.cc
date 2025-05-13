@@ -149,16 +149,42 @@ struct y_parser : pctx::Repeat<y_inner_parser, true>
 
 struct athen : pctx::AndThen<pctx::MorphemeParser<TokenType::Asterisk>>
 {
-  empty_t operator()(State&, auto) const { return {}; }
+  constexpr static size_t CUT_AT = 0;
+
+  empty_t operator()(State&, auto&&) const { return {}; }
 };
 
 using parser = pctx::Engine<pctx::ExpectEOF<athen>>;
+
+//
+
+//
+
+//
+
+//
+
+//
+
+//
+
+using lexer2 = lexible::lexer<TokenType, whitespace, identifier, asterisk>;
+using pctx2 = lexible::ParsingContext<lexer2, State>;
+
+struct andthen : pctx2::AndThen<pctx2::MorphemeParser<TokenType::Asterisk>>
+{
+  constexpr static size_t CUT_AT = 3;
+
+  empty_t operator()(State&, auto&&) const { return {}; }
+};
+
+using parser2 = pctx2::Engine<andthen>;
 
 int
 main()
 {
   std::string_view input = "error *";
-  auto out = parser(input).parse();
+  auto out = parser2(input).parse();
 
   if (out.has_value()) {
     std::cout << std::format("got a successful parse\n");

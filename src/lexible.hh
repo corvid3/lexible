@@ -278,6 +278,8 @@ class ParsingContext
   static inline thread_local int parsing_depth = 0;
 
 public:
+  // TODO: be able to mark errors chains as fatal,
+  // and then bubble up all fatal errors
   class Error
   {
     int m_depth;
@@ -385,22 +387,26 @@ public:
       using return_type =
         typename FunctionTypes<decltype(&START::template run<START>)>::ret_type;
 
-      token_queue_t t(std::span{ m_toks });
-      return_type&& out = START().template run<START>(s, t);
+      try {
+        token_queue_t t(std::span{ m_toks });
+        return_type&& out = START().template run<START>(s, t);
 
-      // if (not t.empty()) {
-      //   if (out.has_value()) {
-      //     throw std::runtime_error(
-      //       "didn't hit EOF by end of parse in lexible, "
-      //       "an incomplete grammar was provided. please edit your grammar "
-      //       "definition to error on non-eof");
-      //   }
+        // if (not t.empty()) {
+        //   if (out.has_value()) {
+        //     throw std::runtime_error(
+        //       "didn't hit EOF by end of parse in lexible, "
+        //       "an incomplete grammar was provided. please edit your grammar "
+        //       "definition to error on non-eof");
+        //   }
 
-      //   // TODO: make parsing err type
-      //   throw std::runtime_error(out.error().what());
-      // }
+        //   // TODO: make parsing err type
+        //   throw std::runtime_error(out.error().what());
+        // }
 
-      return out;
+        return out;
+      } catch (CutException const& e) {
+        return create_error<return_type>(e.tok, e.what);
+      }
 
       // NOTE: from reading how another person implemented
       // a backtracking parser, it seems that one
@@ -480,6 +486,16 @@ public:
     std::string_view operator()(STATE&, std::string_view s) const { return s; }
   };
 
+  // thrown when AndThen encounters a cut error
+  struct CutException
+  {
+    CutException(token_t t, std::string_view w)
+      : tok(t)
+      , what(w) {};
+    token_t tok;
+    std::string what;
+  };
+
   // ON_TRUE should be a lambda that takes:
   //   - STATE& s
   //   - std::tuple<...> whats
@@ -490,49 +506,57 @@ public:
   template<typename... EXPECTED>
   struct AndThen : private Parser
   {
+    // this is unbelievably bad.
+    // this was crafted in the forge of desperation
+    // eventually, it will perish and be replaced
+    // with something better. for now, behold
+    template<typename Self, size_t CUT_AT, size_t... Is>
+    auto apply(STATE& state, token_queue_t& toks, std::index_sequence<Is...>)
+    {
+      std::tuple outs{ std::optional<typename FunctionTypes<
+        decltype(&EXPECTED::template run<EXPECTED>)>::ret_type>()... };
+
+      using unwrapped_out_type = decltype(std::apply(
+        [](auto&&... in) { return std::make_tuple(*std::move(in)...); }, outs));
+
+      using result_type = Result<typename FunctionTypes<decltype(Self()(
+        state, std::declval<unwrapped_out_type>()))>::ret_type>;
+
+      if (not(... && [&]<typename PARSER, size_t I>(PARSER&& p) {
+            auto&& begin = token_queue_t(toks).next();
+            auto&& res = p.template run<PARSER>(state, toks);
+
+            if (res) {
+              std::get<I>(outs) = std::move(res);
+              return true;
+            }
+
+            if (I >= CUT_AT)
+              throw CutException(begin, "err in cut");
+
+            return false;
+          }.template operator()<EXPECTED, Is>(EXPECTED()))) {
+        // on error
+        return create_error<result_type>("error in parse andthen");
+      }
+
+      auto unwrapped_tup = std::apply(
+        [](auto&&... args) { return std::make_tuple(*std::move(args)...); },
+        std::move(outs));
+      return result_type(
+        static_cast<Self&>(*this)(state, std::move(unwrapped_tup)));
+    }
+
     template<typename Self>
     auto run(STATE& state, token_queue_t& toks)
     {
-      // if any of EXPECTED... fail,
-      // then this should return an error.
+      // static_assert(std::same_as<decltype(Self::CUT_AT), size_t>,
+      //               "AndThen parser should have a defined CUT size_t
+      //               constexpr " "static field, that defines the point at
+      //               which the parser " "should throw a fatal error");
 
-      // auto const starting_token = token_queue_t(toks).next();
-
-      auto tup =
-        std::tuple{ EXPECTED().template run<EXPECTED>(state, toks)... };
-      bool failed = false;
-
-      using result_type = Result<typename FunctionTypes<decltype(Self()(
-        state, std::declval<decltype(tup)>()))>::ret_type>;
-
-      Error e(typename Error::empty_m{});
-
-      // TODO: need to short circuit this
-      std::apply(
-        [&](auto&... args) {
-          (
-            [&](auto& arg) {
-              if (not arg.has_value()) {
-                failed = true;
-
-                e << std::move(arg.error());
-              }
-
-              return;
-            }(args),
-            ...);
-        },
-        tup);
-
-      if (failed == true) {
-        // TODO: allow programmer to "override" inner errors
-        return create_error<result_type>(e);
-      } else {
-        auto unwrapped_tup =
-          std::apply([](auto&&... args) { return std::tuple(*args...); }, tup);
-
-        return result_type(static_cast<Self&>(*this)(state, unwrapped_tup));
-      }
+      return apply<Self, Self::CUT_AT>(
+        state, toks, std::index_sequence_for<EXPECTED...>());
     }
   };
 
