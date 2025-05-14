@@ -65,96 +65,96 @@ struct factor_parser;
 struct term_parser;
 struct expression_parser;
 
-struct paranthesis_parser
-  : pctx::AndThen<pctx::MorphemeParser<TokenType::LeftParanthesis>,
-                  expression_parser,
-                  pctx::MorphemeParser<TokenType::RightParanthesis>>
-{
-  empty_t operator()(State&, auto) const { return {}; };
-};
+// struct paranthesis_parser
+//   : pctx::AndThen<pctx::MorphemeParser<TokenType::LeftParanthesis>,
+//                   expression_parser,
+//                   pctx::MorphemeParser<TokenType::RightParanthesis>>
+// {
+//   empty_t operator()(State&, auto) const { return {}; };
+// };
 
-struct expression_parser
-  : pctx::Any<pctx::MorphemeParser<TokenType::Number>, paranthesis_parser>
-{
-  empty_t operator()(State&, std::string_view s, pctx::placeholder_t<0>)
-  {
-    std::cout << s << std::endl;
-    return {};
-  };
+// struct expression_parser
+//   : pctx::Any<pctx::MorphemeParser<TokenType::Number>, paranthesis_parser>
+// {
+//   empty_t operator()(State&, std::string_view s, pctx::placeholder_t<0>)
+//   {
+//     std::cout << s << std::endl;
+//     return {};
+//   };
 
-  empty_t operator()(State&, empty_t, pctx::placeholder_t<1>) { return {}; };
-};
+//   empty_t operator()(State&, empty_t, pctx::placeholder_t<1>) { return {}; };
+// };
 
-struct num_parser : pctx::MorphemeParser<TokenType::Number>
-{};
+// struct num_parser : pctx::MorphemeParser<TokenType::Number>
+// {};
 
-struct ident_parser : pctx::MorphemeParser<TokenType::Identifier>
-{};
+// struct ident_parser : pctx::MorphemeParser<TokenType::Identifier>
+// {};
 
-struct any_parser : pctx::Any<num_parser, ident_parser>
-{
-  std::string_view operator()(State&,
-                              std::string_view s,
-                              pctx::placeholder_t<0>)
-  {
-    return s;
-  };
+// struct any_parser : pctx::Any<num_parser, ident_parser>
+// {
+//   std::string_view operator()(State&,
+//                               std::string_view s,
+//                               pctx::placeholder_t<0>)
+//   {
+//     return s;
+//   };
 
-  std::string_view operator()(State&,
-                              std::string_view s,
-                              pctx::placeholder_t<1>)
-  {
-    return s;
-  };
+//   std::string_view operator()(State&,
+//                               std::string_view s,
+//                               pctx::placeholder_t<1>)
+//   {
+//     return s;
+//   };
 
-  void err(State&, std::optional<lexer::token>)
-  {
-    throw std::runtime_error("huh");
-  }
-};
+//   void err(State&, std::optional<lexer::token>)
+//   {
+//     throw std::runtime_error("huh");
+//   }
+// };
 
-struct repeater : pctx::Repeat<any_parser, false>
-{
-  empty_t operator()(State&, std::span<std::string_view> s) const
-  {
-    for (auto const& i : s)
-      std::cout << std::format("list ident: {}\n", i);
+// struct repeater : pctx::Repeat<any_parser, false>
+// {
+//   empty_t operator()(State&, std::span<std::string_view> s) const
+//   {
+//     for (auto const& i : s)
+//       std::cout << std::format("list ident: {}\n", i);
 
-    return {};
-  };
-};
+//     return {};
+//   };
+// };
 
-class y
-{
-  y() = default;
+// class y
+// {
+//   y() = default;
 
-public:
-  y(int) {};
-};
+// public:
+//   y(int) {};
+// };
 
-struct y_inner_parser : pctx::Any<pctx::MorphemeParser<TokenType::Asterisk>>
-{
-  y operator()(State&, std::string_view, pctx::placeholder_t<0>)
-  {
-    return y(1);
-  };
+// struct y_inner_parser : pctx::Any<pctx::MorphemeParser<TokenType::Asterisk>>
+// {
+//   y operator()(State&, std::string_view, pctx::placeholder_t<0>)
+//   {
+//     return y(1);
+//   };
 
-  std::string err(State&) { return "m"; }
-};
+//   std::string err(State&) { return "m"; }
+// };
 
-struct y_parser : pctx::Repeat<y_inner_parser, true>
-{
-  empty_t operator()(State&, std::span<y const>) { return {}; };
-};
+// struct y_parser : pctx::Repeat<y_inner_parser, true>
+// {
+//   empty_t operator()(State&, std::span<y const>) { return {}; };
+// };
 
-struct athen : pctx::AndThen<pctx::MorphemeParser<TokenType::Asterisk>>
-{
-  constexpr static size_t CUT_AT = 0;
+// struct athen : pctx::AndThen<pctx::MorphemeParser<TokenType::Asterisk>>
+// {
+//   constexpr static size_t CUT_AT = 0;
 
-  empty_t operator()(State&, auto&&) const { return {}; }
-};
+//   empty_t operator()(State&, auto&&) const { return {}; }
+// };
 
-using parser = pctx::Engine<pctx::ExpectEOF<athen>>;
+// using parser = pctx::Engine<pctx::ExpectEOF<athen>>;
 
 //
 
@@ -171,9 +171,12 @@ using parser = pctx::Engine<pctx::ExpectEOF<athen>>;
 using lexer2 = lexible::lexer<TokenType, whitespace, identifier, asterisk>;
 using pctx2 = lexible::ParsingContext<lexer2, State>;
 
-struct andthen : pctx2::AndThen<pctx2::MorphemeParser<TokenType::Asterisk>>
+struct andthen2
+  : pctx2::AndThen<
+      pctx2::MorphemeParser<TokenType::Identifier, "expected identifier">>
 {
   constexpr static size_t CUT_AT = 3;
+  constexpr static std::string_view CUT_ERROR = "";
 
   empty_t operator()(State&, auto&& m) const
   {
@@ -183,7 +186,28 @@ struct andthen : pctx2::AndThen<pctx2::MorphemeParser<TokenType::Asterisk>>
   }
 };
 
-using parser2 = pctx2::Engine<andthen>;
+struct andthen
+  : pctx2::AndThen<
+      pctx2::MorphemeParser<TokenType::Asterisk, "expected asterisk">,
+      andthen2>
+{
+  constexpr static size_t CUT_AT = 3;
+  constexpr static std::string_view CUT_ERROR = "";
+
+  empty_t operator()(State&, auto&& m) const
+  {
+    std::cout << typeid(m).name() << std::endl;
+
+    return {};
+  }
+};
+
+struct repeat : pctx2::Repeat<andthen, false>
+{
+  empty_t operator()(State&, std::span<empty_t const>) { return {}; };
+};
+
+using parser2 = pctx2::Engine<repeat>;
 
 int
 main()

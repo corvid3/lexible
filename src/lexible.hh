@@ -121,7 +121,6 @@ public:
     // have to put this here so the skip token
     // also counts towards advancing the row & col
     if (out_sv.contains('\n')) {
-      printf("newline\n");
       auto const last_of = out_sv.find_last_of('\n');
 
       m_rowCtr += std::count(out_sv.begin(), out_sv.end(), '\n');
@@ -266,6 +265,25 @@ template<typename Self, typename STATE>
 concept has_err_fn = requires(Self s) {
   { s.err(std::declval<STATE&>()) } -> std::convertible_to<std::string>;
 };
+
+template<size_t N>
+struct ComptimeStr
+{
+  constexpr ComptimeStr(char const (&str)[N]) { std::copy(str, str + N, data); }
+  operator std::string_view() const
+  {
+    return std::string_view{ data, data + N };
+  }
+
+  char data[N];
+};
+
+template<ComptimeStr s>
+constexpr auto
+operator""_cs()
+{
+  return s;
+}
 
 template<typename LEXER, typename STATE>
   requires is_lexer<LEXER>
@@ -494,7 +512,10 @@ public:
   //   - std::string_view what
   // and returns any value,
   //   if no value is desired then use empty_t
-  template<auto const EXPECTED_TYPE>
+  template<auto const EXPECTED_TYPE,
+           ComptimeStr error =
+             "blanket error for MorphemeParser. report this to project "
+             "maintainer if this appears in an output">
   struct MorphemeParser : private Parser
   {
     template<typename Self>
@@ -505,9 +526,8 @@ public:
 
       auto const tok = toks.next();
 
-      if (tok.type != EXPECTED_TYPE) {
-        return create_error<result_type>(tok, "failed to parse in morpheme");
-      }
+      if (tok.type != EXPECTED_TYPE)
+        return create_error<result_type>(tok, error);
 
       return result_type(static_cast<Self&>(*this)(state, tok.what));
     }
@@ -539,7 +559,7 @@ public:
     // this was crafted in the forge of desperation
     // eventually, it will perish and be replaced
     // with something better. for now, behold
-    template<typename Self, size_t CUT_AT, size_t... Is>
+    template<typename Self, size_t... Is>
     auto apply(STATE& state, token_queue_t& toks, std::index_sequence<Is...>)
     {
       // make'em optional such that
@@ -561,36 +581,37 @@ public:
       auto const begin = token_queue_t(toks).next();
       std::optional<Error> error;
 
-      if (not(... && [&]<typename PARSER, size_t I>(PARSER&& p) {
-            auto&& res = p.template run<PARSER>(state, toks);
+      bool successful = (... && [&]<typename PARSER, size_t I>(PARSER&& p) {
+        auto&& res = p.template run<PARSER>(state, toks);
 
-            if (res) {
-              std::get<I>(outs) = std::move(res);
-              return true;
-            }
+        if (res) {
+          std::get<I>(outs) = std::move(res);
+          return true;
+        }
 
-            if (I >= CUT_AT)
-              error = Error(begin, "failed cut").fatal();
-            else
-              error = Error(begin, "failed to parse in andthen");
+        if (I >= Self::CUT_AT)
+          error = Error(begin, Self::CUT_ERROR).fatal();
+        // << std::move(res.error());
+        else
+          error = std::move(res.error());
 
-            // move the error into this error
-            (*error) << std::move(res.error());
+        // move the error into this error
 
-            return false;
-          }.template operator()<EXPECTED, Is>(EXPECTED()))) {
-        // on error
-        return create_error<result_type>(std::move(error).value());
+        return false;
+      }.template operator()<EXPECTED, Is>(EXPECTED()));
+
+      if (not successful) {
+        return create_error<result_type>(std::move(error.value()));
+      } else {
+        auto&& unwrapped_tup = std::apply(
+          [](auto&&... args) {
+            return std::make_tuple(std::move(args).value().value()...);
+          },
+          std::move(outs));
+
+        return result_type(
+          static_cast<Self&>(*this)(state, std::move(unwrapped_tup)));
       }
-
-      auto&& unwrapped_tup = std::apply(
-        [](auto&&... args) {
-          return std::make_tuple(std::move(args).value().value()...);
-        },
-        std::move(outs));
-
-      return result_type(
-        static_cast<Self&>(*this)(state, std::move(unwrapped_tup)));
     }
 
     template<typename Self>
@@ -601,8 +622,7 @@ public:
       //               constexpr " "static field, that defines the point at
       //               which the parser " "should throw a fatal error");
 
-      return apply<Self, Self::CUT_AT>(
-        state, toks, std::index_sequence_for<EXPECTED...>());
+      return apply<Self>(state, toks, std::index_sequence_for<EXPECTED...>());
     }
   };
 
@@ -756,9 +776,10 @@ public:
       apply<Self, result_type, MAYBE...>(first_match, state, toks, index_seq{});
 
       if (not first_match.has_value()) {
-        return create_error<result_type>(
-          Error(first_token, "unable to match in Any")
-          << std::move(first_match.error()));
+        // return create_error<result_type>(
+        //   Error(first_token, "unable to match in Any")
+        //   << std::move(first_match.error()));
+        return create_error<result_type>(std::move(first_match.error()));
 
         // run_err<Self, result_type>(state, first_token, first_match);
       }
@@ -817,8 +838,7 @@ public:
           }
 
           if (into.error().is_fatal())
-            return Error(starting_token, "failed to parse in repeat")
-                   << std::move(into).error();
+            return create_error<result_type>(std::move(into).error());
 
           // otherwise, return what we got.
           break;
@@ -848,15 +868,9 @@ public:
 
       using result_type = decltype(out);
 
-      if (not toks.empty()) {
-        Error e = Error(toks.next(), "expected EOF").fatal();
-        // prefer deepest possible error
-
-        if (not out.has_value())
-          e << std::move(out.error());
-
-        return create_error<result_type>(e);
-      }
+      if (not toks.empty())
+        if (out.has_value())
+          return create_error<result_type>(Error(toks.next(), "expected EOF"));
 
       return std::move(out);
     }
