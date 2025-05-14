@@ -175,7 +175,12 @@ struct andthen : pctx2::AndThen<pctx2::MorphemeParser<TokenType::Asterisk>>
 {
   constexpr static size_t CUT_AT = 3;
 
-  empty_t operator()(State&, auto&&) const { return {}; }
+  empty_t operator()(State&, auto&& m) const
+  {
+    std::cout << typeid(m).name() << std::endl;
+
+    return {};
+  }
 };
 
 using parser2 = pctx2::Engine<andthen>;
@@ -183,7 +188,7 @@ using parser2 = pctx2::Engine<andthen>;
 int
 main()
 {
-  std::string_view input = "error *";
+  std::string_view input = "*";
   auto out = parser2(input).parse();
 
   if (out.has_value()) {

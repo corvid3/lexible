@@ -112,12 +112,11 @@ public:
 
     m_off += out.length();
 
-    std::string_view out_sv((char const*)&*out.begin(),
-                            (char const*)&*out.end());
-
     // save these for the _start_ position of the token
     auto const saved_row = m_rowCtr;
     auto const saved_col = m_colCtr;
+
+    auto const out_sv = out.begin()->str();
 
     // have to put this here so the skip token
     // also counts towards advancing the row & col
@@ -285,6 +284,7 @@ public:
     int m_depth;
     std::string m_error;
     token_t m_errTok;
+    bool m_fatal = false;
 
     std::unique_ptr<Error> m_child = nullptr;
 
@@ -322,19 +322,52 @@ public:
 
     bool operator<(Error const& rhs) const { return m_depth < rhs.m_depth; }
 
-    Error& operator|(Error& rhs)
+    Error& operator<<(Error&& rhs) &
+    {
+      if (not m_child or *m_child < rhs) {
+        // bubble up fatal errors
+        m_fatal |= rhs.m_fatal;
+
+        // bubble up the depth
+        m_depth = rhs.m_depth;
+
+        m_child.reset(new Error(std::move(rhs)));
+      }
+
+      return *this;
+    }
+
+    Error&& operator<<(Error&& rhs) &&
+    {
+      if (not m_child or *m_child < rhs) {
+        // bubble up fatal errors
+        m_fatal |= rhs.m_fatal;
+
+        // bubble up the depth
+        m_depth = rhs.m_depth;
+
+        m_child.reset(new Error(std::move(rhs)));
+      }
+
+      return std::move(*this);
+    }
+
+    // selects the deepest error,
+    // and returns a reference to it
+    Error&& operator|(Error&& rhs) &&
     {
       if (*this < rhs)
-        return rhs;
-
-      return *this;
+        return std::move(rhs);
+      return std::move(*this);
     }
 
-    Error const& operator<<(Error&&) &
+    Error&& fatal() &&
     {
-      // this->m_child.reset(new Error(std::move(rhs)));
-      return *this;
+      this->m_fatal = true;
+      return std::move(*this);
     }
+
+    bool is_fatal() const { return this->m_fatal; }
 
     std::optional<std::reference_wrapper<Error>> get_child() const
     {
@@ -387,26 +420,22 @@ public:
       using return_type =
         typename FunctionTypes<decltype(&START::template run<START>)>::ret_type;
 
-      try {
-        token_queue_t t(std::span{ m_toks });
-        return_type&& out = START().template run<START>(s, t);
+      token_queue_t t(std::span{ m_toks });
+      return_type&& out = START().template run<START>(s, t);
 
-        // if (not t.empty()) {
-        //   if (out.has_value()) {
-        //     throw std::runtime_error(
-        //       "didn't hit EOF by end of parse in lexible, "
-        //       "an incomplete grammar was provided. please edit your grammar "
-        //       "definition to error on non-eof");
-        //   }
+      // if (not t.empty()) {
+      //   if (out.has_value()) {
+      //     throw std::runtime_error(
+      //       "didn't hit EOF by end of parse in lexible, "
+      //       "an incomplete grammar was provided. please edit your grammar "
+      //       "definition to error on non-eof");
+      //   }
 
-        //   // TODO: make parsing err type
-        //   throw std::runtime_error(out.error().what());
-        // }
+      //   // TODO: make parsing err type
+      //   throw std::runtime_error(out.error().what());
+      // }
 
-        return out;
-      } catch (CutException const& e) {
-        return create_error<return_type>(e.tok, e.what);
-      }
+      return out;
 
       // NOTE: from reading how another person implemented
       // a backtracking parser, it seems that one
@@ -487,14 +516,14 @@ public:
   };
 
   // thrown when AndThen encounters a cut error
-  struct CutException
-  {
-    CutException(token_t t, std::string_view w)
-      : tok(t)
-      , what(w) {};
-    token_t tok;
-    std::string what;
-  };
+  // struct CutException
+  // {
+  //   CutException(token_t t, std::string_view w)
+  //     : tok(t)
+  //     , what(w) {};
+  //   token_t tok;
+  //   std::string what;
+  // };
 
   // ON_TRUE should be a lambda that takes:
   //   - STATE& s
@@ -513,17 +542,26 @@ public:
     template<typename Self, size_t CUT_AT, size_t... Is>
     auto apply(STATE& state, token_queue_t& toks, std::index_sequence<Is...>)
     {
+      // make'em optional such that
+      // we can defer the construction of the values
+      // until the parsers emit
       std::tuple outs{ std::optional<typename FunctionTypes<
         decltype(&EXPECTED::template run<EXPECTED>)>::ret_type>()... };
 
+      // optional<expected>, so gotta unwrap twice
       using unwrapped_out_type = decltype(std::apply(
-        [](auto&&... in) { return std::make_tuple(*std::move(in)...); }, outs));
+        [](auto&&... in) {
+          return std::make_tuple(std::move(in).value().value()...);
+        },
+        outs));
 
       using result_type = Result<typename FunctionTypes<decltype(Self()(
         state, std::declval<unwrapped_out_type>()))>::ret_type>;
 
+      auto const begin = token_queue_t(toks).next();
+      std::optional<Error> error;
+
       if (not(... && [&]<typename PARSER, size_t I>(PARSER&& p) {
-            auto&& begin = token_queue_t(toks).next();
             auto&& res = p.template run<PARSER>(state, toks);
 
             if (res) {
@@ -532,17 +570,25 @@ public:
             }
 
             if (I >= CUT_AT)
-              throw CutException(begin, "err in cut");
+              error = Error(begin, "failed cut").fatal();
+            else
+              error = Error(begin, "failed to parse in andthen");
+
+            // move the error into this error
+            (*error) << std::move(res.error());
 
             return false;
           }.template operator()<EXPECTED, Is>(EXPECTED()))) {
         // on error
-        return create_error<result_type>("error in parse andthen");
+        return create_error<result_type>(std::move(error).value());
       }
 
-      auto unwrapped_tup = std::apply(
-        [](auto&&... args) { return std::make_tuple(*std::move(args)...); },
+      auto&& unwrapped_tup = std::apply(
+        [](auto&&... args) {
+          return std::make_tuple(std::move(args).value().value()...);
+        },
         std::move(outs));
+
       return result_type(
         static_cast<Self&>(*this)(state, std::move(unwrapped_tup)));
     }
@@ -620,7 +666,13 @@ public:
 
       if (not first_match.has_value()) {
         // keep matching for the deepest error
-        out = create_error<Result>(out.error() | first_match.error());
+        out = create_error<Result>(std::move(out).error() |
+                                   std::move(first_match).error());
+
+        // if the error is fatal, immediately return and break
+        // out of the fold loop
+        if (out.error().is_fatal())
+          return true;
 
         return false;
       } else {
@@ -672,14 +724,12 @@ public:
     {
       // TODO: Any should actually choose the parse that consumes the most
       // tokens!
-      // maybe.
       using index_seq = std::index_sequence_for<MAYBE...>;
 
       // verify that all return values of the operators()
       // are the same
       assert<Self>(state, index_seq{});
 
-      // then, if they are, get the return type of the operator()
       using out_type_of_out_type_at =
         typename FunctionTypes<decltype(out_type_at<Self, 0>{}(
           &Self::operator()))>::ret_type;
@@ -691,29 +741,28 @@ public:
 
       auto const first_token = token_queue_t(toks).next();
 
-      // need to get result type
-      // put in some garbage data so we can use this
-      result_type first_match = create_error<result_type>(
-        first_token, "empty debug error in any match");
-
-      // idk? maybe this gets rid of recursion??
+      // gets rid of some recursion overflow edge caseswhen @ EOF
+      // NOTE: need to implement "deepest depth" errors,
+      // i.e. if recursing >50 times just throw a fatal error
       if (toks.empty())
-        return result_type(
-          create_error<result_type>(first_token, "hit EOF in any parser"));
+        return result_type(create_error<result_type>(
+          Error(first_token, "hit EOF in any parser").fatal()));
 
-      // return early for a "successful" parse,
-      // but while there are errors, continue compiling the deepest
-      // error
+      // put in some garbage data that immediately gets
+      // overwritten
+      result_type first_match(
+        create_error<result_type>(Error(first_token, "garbage data")));
+
       apply<Self, result_type, MAYBE...>(first_match, state, toks, index_seq{});
 
-      // if there is a "override_err" method,
-      // and the parser failed, then overrwrite the deepest error
       if (not first_match.has_value()) {
-        run_err<Self, result_type>(state, first_token, first_match);
+        return create_error<result_type>(
+          Error(first_token, "unable to match in Any")
+          << std::move(first_match.error()));
+
+        // run_err<Self, result_type>(state, first_token, first_match);
       }
 
-      // TODO: allow user to override any sub-errors
-      // with a custom error method
       return first_match;
     }
   };
@@ -757,16 +806,19 @@ public:
           if constexpr (AT_LEAST_ONE) {
             if (i == 0) {
               // err'd, push one to the queue
-              Error e(
-                starting_token,
-                "failed to parse in repeat, expected at least one possible "
-                "parse");
-
-              e << std::move(into.error());
-
-              return create_error<result_type>(e);
+              return create_error<result_type>(
+                Error(
+                  starting_token,
+                  "failed to parse in repeat, expected at least one possible "
+                  "parse")
+                  .fatal()
+                << std::move(into.error()));
             }
           }
+
+          if (into.error().is_fatal())
+            return Error(starting_token, "failed to parse in repeat")
+                   << std::move(into).error();
 
           // otherwise, return what we got.
           break;
@@ -797,13 +849,12 @@ public:
       using result_type = decltype(out);
 
       if (not toks.empty()) {
-        Error e(toks.next(), "expected EOF");
+        Error e = Error(toks.next(), "expected EOF").fatal();
         // prefer deepest possible error
 
-        if (not out.has_value()) {
-          printf("has error\n");
+        if (not out.has_value())
           e << std::move(out.error());
-        }
+
         return create_error<result_type>(e);
       }
 
