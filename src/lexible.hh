@@ -231,7 +231,7 @@ private:
   size_t m_idx = 0;
 };
 
-template<typename Ret, typename... Params>
+template<typename Ret>
 struct FunctionTypes
 {
   using ret_type = Ret;
@@ -575,6 +575,9 @@ public:
         },
         outs));
 
+      // whoa, is functiontypes useless here??
+      // i'm really confused on how i'm selecting overloaded functions
+      // this is confusing myself...
       using result_type = Result<typename FunctionTypes<decltype(Self()(
         state, std::declval<unwrapped_out_type>()))>::ret_type>;
 
@@ -761,12 +764,12 @@ public:
 
       auto const first_token = token_queue_t(toks).next();
 
-      // gets rid of some recursion overflow edge caseswhen @ EOF
+      // gets rid of some recursion overflow edge cases when @ EOF
       // NOTE: need to implement "deepest depth" errors,
       // i.e. if recursing >50 times just throw a fatal error
       if (toks.empty())
         return result_type(create_error<result_type>(
-          Error(first_token, "hit EOF in any parser").fatal()));
+          Error(first_token, "hit EOF in any parser")));
 
       // put in some garbage data that immediately gets
       // overwritten
