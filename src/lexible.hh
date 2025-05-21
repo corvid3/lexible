@@ -570,9 +570,7 @@ public:
 
       // optional<expected>, so gotta unwrap twice
       using unwrapped_out_type = decltype(std::apply(
-        [](auto&&... in) {
-          return std::make_tuple(std::move(in).value().value()...);
-        },
+        [](auto&&... in) { return std::make_tuple(**std::move(in)...); },
         outs));
 
       // whoa, is functiontypes useless here??
@@ -607,9 +605,7 @@ public:
         return create_error<result_type>(std::move(error.value()));
       } else {
         auto&& unwrapped_tup = std::apply(
-          [](auto&&... args) {
-            return std::make_tuple(std::move(args).value().value()...);
-          },
+          [](auto&&... args) { return std::make_tuple(**std::move(args)...); },
           std::move(outs));
 
         return result_type(
