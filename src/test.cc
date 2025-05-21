@@ -169,7 +169,7 @@ struct expression_parser;
 //
 
 using lexer2 = lexible::lexer<TokenType, whitespace, identifier, asterisk>;
-using pctx2 = lexible::ParsingContext<lexer2, State>;
+using pctx2 = lexible::ParsingContext<lexer2::token, State>;
 
 struct andthen2
   : pctx2::AndThen<
@@ -213,7 +213,9 @@ int
 main()
 {
   std::string_view input = "*";
-  auto out = parser2(input).parse();
+  auto const toks = lexer2(input).consume_all();
+
+  auto out = parser2(toks).parse();
 
   if (out.has_value()) {
     std::cout << std::format("got a successful parse\n");

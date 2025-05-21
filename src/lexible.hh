@@ -146,6 +146,21 @@ public:
     return { m_src.begin() + m_off, m_src.end() };
   }
 
+  std::vector<token> consume_all()
+  {
+    std::vector<token> toks;
+
+    for (;;) {
+      auto const tok = this->next();
+      toks.push_back(tok);
+
+      if (tok.type == decltype(tok.type)::LEXIBLE_EOF)
+        break;
+    }
+
+    return toks;
+  }
+
   std::string_view m_src;
   size_t m_off = 0;
 
@@ -285,11 +300,9 @@ operator""_cs()
   return s;
 }
 
-template<typename LEXER, typename STATE>
-  requires is_lexer<LEXER>
+template<typename token_t, typename STATE>
 class ParsingContext
 {
-  using token_t = typename LEXER::token;
   using token_queue_t = NonowningQueue<token_t>;
 
   static inline thread_local int parsing_depth = 0;
@@ -415,17 +428,9 @@ public:
   class Engine
   {
   public:
-    Engine(std::string_view const str)
+    Engine(std::span<token_t const> toks)
+      : m_toks(toks)
     {
-      LEXER lex(str);
-
-      for (;;) {
-        auto const tok = lex.next();
-        m_toks.push_back(tok);
-
-        if (tok.type == decltype(tok.type)::LEXIBLE_EOF)
-          break;
-      }
     }
 
     Engine(const Engine&) = delete;
@@ -498,7 +503,7 @@ public:
     }
 
   private:
-    std::vector<token_t> m_toks;
+    std::span<token_t const> m_toks;
   };
 
   struct Parser
