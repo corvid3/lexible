@@ -108,7 +108,11 @@ public:
 
     if (out.empty())
       throw std::runtime_error(
-        std::format("unknown input in lexer @ pos {}", m_off));
+        std::format("unknown input in lexer @ pos {}, {}:{}: {}",
+                    m_off,
+                    m_rowCtr + 1,
+                    m_colCtr + 1,
+                    (int)m_src[m_off]));
 
     m_off += out.length();
 
