@@ -5,6 +5,8 @@
 #include <functional>
 #include <iostream>
 #include <optional>
+#include <ostream>
+#include <print>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -209,13 +211,33 @@ struct repeat : pctx2::Repeat<andthen, false>
 
 using parser2 = pctx2::Engine<repeat>;
 
-int
-main()
+struct maybe
+  : pctx2::Maybe<pctx2::MorphemeParser<TokenType::Asterisk>,
+                 pctx2::MorphemeParser<TokenType::Identifier>>
 {
-  std::string_view input = "*";
+  empty_t operator()(State&, std::string_view)
+  {
+    std::println("ran first");
+
+    return {};
+  };
+
+  empty_t operator()(State&, std::string_view, std::string_view)
+  {
+
+    std::println("ran second");
+    return {};
+  };
+};
+
+using parser2b = pctx2::Engine<maybe>;
+
+void
+m(std::string_view input)
+{
   auto const toks = lexer2(input).consume_all();
 
-  auto out = parser2(toks).parse();
+  auto out = parser2b(toks).parse();
 
   if (out.has_value()) {
     std::cout << std::format("got a successful parse\n");
@@ -223,4 +245,12 @@ main()
     std::cout << std::format("got an unsuccessful parse: {}\n",
                              out.error().what());
   }
+}
+
+int
+main()
+{
+  m("s");
+  m("*");
+  m("*s");
 }

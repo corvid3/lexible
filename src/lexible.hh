@@ -634,6 +634,52 @@ public:
     }
   };
 
+  template<typename HEAD, typename TAIL>
+  struct Maybe : private Parser
+  {
+    template<typename Self>
+    auto run(STATE& state, token_queue_t& toks)
+    {
+      // Head::run() -> Result<HT>
+      // Tail::run() -> Result<TT>
+      // Maybe -> Result<T>
+      // Maybe::operator(STATE, HT) -> T
+      // Maybe::operator(STATE, HT, TT) -> T
+
+      using HT = decltype(*std::declval<typename FunctionTypes<
+                            decltype(&HEAD::template run<HEAD>)>::ret_type>());
+      using TT = decltype(*std::declval<typename FunctionTypes<
+                            decltype(&TAIL::template run<TAIL>)>::ret_type>());
+      using T1 =
+        FunctionTypes<decltype(Self()(state, std::declval<HT>()))>::ret_type;
+      using T2 =
+        FunctionTypes<decltype(Self()(state, std::declval<TT>()))>::ret_type;
+
+      static_assert(std::same_as<T1, T2>,
+                    "both operator() must return the same type in maybe");
+
+      using out_type = Result<T1>;
+
+      token_queue_t toks_copy(toks);
+      auto&& head_state = HEAD().template run<HEAD>(state, toks_copy);
+
+      if (not head_state)
+        return create_error<out_type>(std::move(head_state).error());
+
+      toks = toks_copy;
+
+      auto&& tail_state = TAIL().template run<TAIL>(state, toks_copy);
+      if (not tail_state)
+        return out_type(
+          static_cast<Self&>(*this)(state, std::move(head_state).value()));
+
+      toks = toks_copy;
+
+      return out_type(static_cast<Self&>(*this)(
+        state, std::move(head_state).value(), std::move(tail_state).value()));
+    }
+  };
+
   // NOTE: maybe make it so that attaching ::err()
   // to a parser makes it a non-failable parse?
   // that is, if it is used within
