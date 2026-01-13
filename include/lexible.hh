@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <concepts>
 #include <expected>
 #include <format>
@@ -17,6 +18,29 @@
 #include <utility>
 
 namespace lexible {
+
+template<size_t N>
+struct ComptimeStr
+{
+  constexpr ComptimeStr(char const (&str)[N])
+  {
+    std::copy(str, str + N - 1, data);
+  }
+
+  constexpr operator std::string_view() const
+  {
+    return std::string_view{ data, data + N - 1 };
+  }
+
+  char data[N - 1]{};
+};
+
+template<ComptimeStr s>
+constexpr auto
+operator""_cs()
+{
+  return s;
+}
 
 template<typename T>
 concept is_enum = requires { requires std::is_scoped_enum_v<T>; };
@@ -39,12 +63,10 @@ concept is_lexer = requires(T t) {
   { t.next() } -> std::same_as<typename T::token>;
 };
 
-template<auto const& REGEX,
+template<ComptimeStr REGEX,
          auto TAG,
          size_t AFFINITY,
          bool CASE_INSENSITIVE = false>
-  requires std::convertible_to<std::string_view,
-                               std::remove_reference_t<decltype(REGEX)>>
 class morpheme
 {
   using Enum = decltype(TAG);
@@ -281,25 +303,6 @@ template<typename Self, typename STATE>
 concept has_err_fn = requires(Self s) {
   { s.err(std::declval<STATE&>()) } -> std::convertible_to<std::string>;
 };
-
-template<size_t N>
-struct ComptimeStr
-{
-  constexpr ComptimeStr(char const (&str)[N]) { std::copy(str, str + N, data); }
-  operator std::string_view() const
-  {
-    return std::string_view{ data, data + N };
-  }
-
-  char data[N];
-};
-
-template<ComptimeStr s>
-constexpr auto
-operator""_cs()
-{
-  return s;
-}
 
 template<typename token_t, typename STATE>
 class ParsingContext
