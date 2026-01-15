@@ -1,7 +1,6 @@
 #pragma once
 
 #include <algorithm>
-#include <array>
 #include <concepts>
 #include <expected>
 #include <format>
@@ -12,6 +11,7 @@
 #include <span>
 #include <sstream>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
@@ -22,25 +22,23 @@ namespace lexible {
 template<size_t N>
 struct ComptimeStr
 {
-  constexpr ComptimeStr(char const (&str)[N])
-  {
-    std::copy(str, str + N - 1, data);
-  }
-
+  constexpr ComptimeStr(char const (&str)[N]) { std::copy(str, str + N, data); }
   constexpr operator std::string_view() const
   {
-    return std::string_view{ data, data + N - 1 };
+    return std::string_view{ data, data + N };
   }
 
-  char data[N - 1]{};
+  char data[N];
 };
 
+namespace literal {
 template<ComptimeStr s>
 constexpr auto
 operator""_cs()
 {
   return s;
 }
+};
 
 template<typename T>
 concept is_enum = requires { requires std::is_scoped_enum_v<T>; };

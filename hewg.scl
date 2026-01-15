@@ -11,7 +11,7 @@ authors = { "crow" }
 
 [depends]
 internal = { }
-external = { }
+external = {  }
 
 [cxx]
 std = 23

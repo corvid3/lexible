@@ -1,3 +1,7 @@
 #!/bin/bash
 
-sudo cp include/lexible.hh /usr/local/include/
+if [ ! -d $HOME/.hewg/bootstrap/crow.lexible ]; then
+  mkdir -p $HOME/.hewg/bootstrap/crow.lexible
+fi
+
+cp include/lexible.hh $HOME/.hewg/bootstrap/crow.lexible/
