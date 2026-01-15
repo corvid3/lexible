@@ -22,22 +22,27 @@ namespace lexible {
 template<size_t N>
 struct ComptimeStr
 {
-  constexpr ComptimeStr(char const (&str)[N]) { std::copy(str, str + N, data); }
+  constexpr ComptimeStr(char const (&str)[N])
+  {
+    std::copy(str, str + N - 1, data);
+  }
   constexpr operator std::string_view() const
   {
-    return std::string_view{ data, data + N };
+    return std::string_view{ data, data + N - 1 };
   }
 
-  char data[N];
+  char data[N - 1]{};
 };
 
 namespace literal {
+
 template<ComptimeStr s>
 constexpr auto
 operator""_cs()
 {
   return s;
 }
+
 };
 
 template<typename T>
